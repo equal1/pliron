@@ -51,6 +51,15 @@ with other compiler projects, touching upon some design decisions.
 * Code documentation for pliron releases can be found on
 [docs.rs](https://docs.rs/pliron/latest/pliron/).
 * Latest code (`master`) documentation is available on [GitHub Pages](https://vaivaswatha.github.io/pliron/).
+* The in-repo **Kaleidoscope tutorial** is under [kaleidoscope/](kaleidoscope/).
+  Build it locally with:
+
+      cargo install mdbook
+      mdbook build kaleidoscope
+      mdbook serve kaleidoscope
+* Chapter-aligned runnable examples live under [examples/](examples/), e.g.:
+
+  cargo run --example kaleidoscope -- --input examples/kaleidoscope/fibonacci.kal --fn main --arg 5
 
 ### Some talks on `pliron`
 * [pliron: An Extensible IR Framework in Rust - IICT'24](https://www.youtube.com/watch?v=LobYuwcUaZA)
