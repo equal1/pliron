@@ -938,6 +938,10 @@ pub fn print_dbg(
         write!(f, " [{}]", successors.disp(ctx))?;
     }
 
+    if !op.loc(ctx).is_unknown() {
+        write!(f, " [@{}]", op.loc(ctx).disp(ctx))?;
+    }
+
     Ok(())
 }
 
