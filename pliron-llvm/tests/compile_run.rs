@@ -15,7 +15,10 @@ use pliron::{
     init_env_logger_for_tests, location,
     op::{Op, verify_op},
     operation::{Operation, verify_operation},
-    opts::{constants::sccp::SCCPPass, dce::DCEPass, mem2reg::Mem2RegPass},
+    opts::{
+        constants::sccp::SCCPPass, dce::DCEPass, mem2reg::Mem2RegPass,
+        simplify_cfg::SimplifyCFGPass,
+    },
     parsable::{self, state_stream_from_file},
     pass_manager::{AnalysisManager, OpPass, OpPassManager, Pass, PassGroup, PassManager},
     printable::Printable,
@@ -213,6 +216,7 @@ fn create_opt_pass_manager() -> OpPassManager<ModuleOp> {
     let mut pass_manager = OpPassManager::<ModuleOp>::default();
     pass_manager.add_pass(OpPass::<Mem2RegPass, FuncOp>::default());
     pass_manager.add_pass(OpPass::<SCCPPass, FuncOp>::default());
+    pass_manager.add_pass(OpPass::<SimplifyCFGPass, FuncOp>::default());
     pass_manager.add_pass(OpPass::<DCEPass, FuncOp>::default());
     pass_manager
 }

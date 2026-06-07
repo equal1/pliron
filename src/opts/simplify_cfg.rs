@@ -19,7 +19,10 @@ use crate::{
     basic_block::BasicBlock,
     builtin::op_interfaces::BranchOpInterface,
     context::{Context, Ptr},
-    graph::walkers::{IRNode, WALKCONFIG_PREORDER_FORWARD, uninterruptible::immutable::walk_op},
+    graph::{
+        HasLabel,
+        walkers::{IRNode, WALKCONFIG_PREORDER_FORWARD, uninterruptible::immutable::walk_op},
+    },
     irbuild::{
         IRStatus,
         inserter::{Inserter, OpInsertionPoint},
@@ -28,7 +31,7 @@ use crate::{
     },
     linked_list::{ContainsLinkedList, LinkedList},
     op::{op_cast, op_impls},
-    operation::Operation,
+    operation::{OpDbg, Operation},
     opts::constants::{BranchOpFoldInterface, ConstFoldInterface},
     pass_manager::{AnalysisManager, Pass, PassResult},
     region::Region,
@@ -99,6 +102,12 @@ fn try_merge_succ(
         };
         branch.successor_operands(ctx, 0)
     };
+
+    log::debug!(
+        "Merging block {} into its successor {}",
+        pred.label(ctx),
+        succ.label(ctx)
+    );
 
     let formal_args: Vec<Value> = succ.deref(ctx).arguments().collect();
     assert_eq!(
@@ -195,9 +204,12 @@ pub fn remove_blocks_inside_region(
     if !dead_blocks.is_empty() {
         status = IRStatus::Changed;
     }
-    dead_blocks
-        .iter()
-        .for_each(|b| BasicBlock::drop_all_uses(*b, ctx));
+
+    for dead_block in &dead_blocks {
+        log::debug!("Removing unreachable block {}", dead_block.label(ctx));
+        BasicBlock::drop_all_uses(*dead_block, ctx);
+    }
+
     dead_blocks
         .iter()
         .for_each(|b| rewriter.erase_block(ctx, *b));
@@ -301,7 +313,33 @@ pub fn simplify_cfg(op: Ptr<Operation>, ctx: &mut Context) -> Result<IRStatus> {
         rewriter.set_insertion_point_before_operation(op);
         let op_dyn = Operation::get_op_dyn(op, ctx);
         let fold_interface = op_cast::<dyn BranchOpFoldInterface>(op_dyn.as_ref()).unwrap();
-        status |= fold_interface.fold_in_place(ctx, &attrs, &mut rewriter);
+        let log_message = if log::log_enabled!(log::Level::Debug) {
+            // Some implementations of `BranchOpFoldInterface` (such as with `BrOp`)
+            // will not actually fold the operation as they're already folded.
+            // So we log the message only if there was an actual folding.
+            let op_dbg = OpDbg { op, ctx };
+            let attr_strs: Vec<String> = attrs
+                .iter()
+                .map(|a| {
+                    a.as_ref().map_or("undetermined".to_string(), |attr| {
+                        attr.disp(ctx).to_string()
+                    })
+                })
+                .collect();
+            format!(
+                "Folding branch operation '{}' with inferred operand attributes {}",
+                op_dbg,
+                attr_strs.join(", ")
+            )
+        } else {
+            String::new()
+        };
+
+        let fold_result = fold_interface.fold_in_place(ctx, &attrs, &mut rewriter);
+        if fold_result == IRStatus::Changed {
+            log::debug!("{}", log_message);
+        }
+        status |= fold_result;
     }
 
     status |= remove_blocks_inside_op(op, ctx, &mut rewriter);

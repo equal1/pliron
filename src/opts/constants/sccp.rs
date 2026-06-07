@@ -225,7 +225,7 @@ pub fn sccp(root_op: Ptr<Operation>, ctx: &mut Context) -> Result<IRStatus> {
     let mut status = IRStatus::Unchanged;
     for (op, attrs) in fold_candidates {
         let log_message = if log::log_enabled!(log::Level::Debug) {
-            // Implementations of `ConstFoldInterface` (such as with `ConstantOp`)
+            // Some implementations of `ConstFoldInterface` (such as with `ConstantOp`)
             // will not actually fold the operation as they're already folded.
             // So we log the message only if there was an actual folding.
             let op_dbg = OpDbg { op, ctx };
@@ -243,7 +243,7 @@ pub fn sccp(root_op: Ptr<Operation>, ctx: &mut Context) -> Result<IRStatus> {
                 attr_strs.join(", ")
             )
         } else {
-            "".into()
+            String::new()
         };
         rewriter.set_insertion_point_before_operation(op);
         let op_dyn = Operation::get_op_dyn(op, ctx);

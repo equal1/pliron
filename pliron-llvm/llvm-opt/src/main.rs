@@ -7,7 +7,10 @@ use pliron::{
     context::{Context, Ptr},
     op::{Op, verify_op},
     operation::Operation,
-    opts::{constants::sccp::SCCPPass, dce::DCEPass, mem2reg::Mem2RegPass},
+    opts::{
+        constants::sccp::SCCPPass, dce::DCEPass, mem2reg::Mem2RegPass,
+        simplify_cfg::SimplifyCFGPass,
+    },
     pass_manager::{self, OpPass, OpPassManager, Pass, PassGroup},
     printable::Printable,
     result::Result,
@@ -47,6 +50,7 @@ enum OptPass {
     Mem2Reg,
     Dce,
     Sccp,
+    SimplifyCfg,
 }
 
 impl FromStr for OptPass {
@@ -57,6 +61,7 @@ impl FromStr for OptPass {
             "mem2reg" => Ok(OptPass::Mem2Reg),
             "dce" => Ok(OptPass::Dce),
             "sccp" => Ok(OptPass::Sccp),
+            "simplify-cfg" => Ok(OptPass::SimplifyCfg),
             other => Err(format!(
                 "unknown optimization pass '{other}'. Available passes: mem2reg, dce, sccp"
             )),
@@ -77,6 +82,9 @@ fn run_opt_passes(module: Ptr<Operation>, opts: &[OptPass], ctx: &mut Context) -
             }
             OptPass::Sccp => {
                 pass_manager.add_pass(OpPass::<SCCPPass, FuncOp>::default());
+            }
+            OptPass::SimplifyCfg => {
+                pass_manager.add_pass(OpPass::<SimplifyCFGPass, FuncOp>::default());
             }
         }
     }
