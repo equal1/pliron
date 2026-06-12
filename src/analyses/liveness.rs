@@ -12,7 +12,6 @@ use crate::{
     context::{Context, Ptr},
     deps::hash::{FxHashMap, FxHashSet},
     graph::{
-        ControlFlowGraph,
         dominance::{DomInfo, DomTree},
         find_ancestor_block_of_block_in_region, find_ancestor_op_of_op_in_block,
         find_ancestor_op_of_op_in_region,
@@ -71,7 +70,7 @@ impl LivenessTq {
 
         let mut is_reducible = true;
         for (src_idx, src_block) in blocks.iter().enumerate() {
-            for succ in region.successors(ctx, src_block) {
+            for succ in src_block.deref(ctx).succs(ctx) {
                 let dst_idx = *block_to_index
                     .get(&succ)
                     .expect("Successor blocks must be in the same region and reachable from entry");
