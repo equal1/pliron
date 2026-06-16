@@ -1,30 +1,141 @@
 //! Implementation of various op interfaces for LLVM IR instructions.
 
 use std::num::NonZero;
+use thiserror::Error;
 
 use pliron::{
+    arg_err,
     attribute::AttrObj,
     basic_block::BasicBlock,
-    builtin::{attributes::IntegerAttr, op_interfaces::BranchOpInterface},
+    builtin::{
+        attributes::IntegerAttr,
+        op_interfaces::{BranchOpInterface, OneResultInterface},
+    },
     context::{Context, Ptr},
     derive::op_interface_impl,
-    irbuild::{IRStatus, rewriter::Rewriter},
+    irbuild::{IRStatus, inserter::Inserter, rewriter::Rewriter},
     op::Op,
     opts::{
         constants::{BranchOpFoldInterface, ConstFoldInterface},
         dce::{BlockArgRemoval, SideEffects},
+        mem2reg::{
+            AllocInfo, PromotableAllocationInterface, PromotableOpInterface, PromotableOpKind,
+        },
     },
+    result::Result,
     utils::apint::APInt,
+    value::Value,
 };
 
-use crate::ops::{
-    AShrOp, AddOp, AddressOfOp, AllocaOp, AndOp, BitcastOp, BrOp, CondBrOp, ExtractElementOp,
-    ExtractValueOp, FAddOp, FCmpOp, FDivOp, FMulOp, FNegOp, FPExtOp, FPToSIOp, FPToUIOp, FPTruncOp,
-    FRemOp, FSubOp, FreezeOp, FuncOp, GetElementPtrOp, ICmpOp, InsertElementOp, InsertValueOp,
-    IntToPtrOp, LShrOp, MulOp, OrOp, PoisonOp, PtrToIntOp, SDivOp, SExtOp, SIToFPOp, SRemOp,
-    SelectOp, ShlOp, ShuffleVectorOp, SubOp, SwitchOp, TruncOp, UDivOp, UIToFPOp, URemOp, UndefOp,
-    XorOp, ZExtOp, ZeroOp,
+use crate::{
+    op_interfaces::PointerTypeResult,
+    ops::{
+        AShrOp, AddOp, AddressOfOp, AllocaOp, AndOp, BitcastOp, BrOp, CondBrOp, ExtractElementOp,
+        ExtractValueOp, FAddOp, FCmpOp, FDivOp, FMulOp, FNegOp, FPExtOp, FPToSIOp, FPToUIOp,
+        FPTruncOp, FRemOp, FSubOp, FreezeOp, FuncOp, GetElementPtrOp, ICmpOp, InsertElementOp,
+        InsertValueOp, IntToPtrOp, LShrOp, LoadOp, MulOp, OrOp, PoisonOp, PtrToIntOp, SDivOp,
+        SExtOp, SIToFPOp, SRemOp, SelectOp, ShlOp, ShuffleVectorOp, StoreOp, SubOp, SwitchOp,
+        TruncOp, UDivOp, UIToFPOp, URemOp, UndefOp, XorOp, ZExtOp, ZeroOp,
+    },
 };
+
+#[derive(Error, Debug)]
+#[error("Register Promotion: Allocation info provided is not related to this operation")]
+pub struct UnrelatedAllocInfo;
+
+#[op_interface_impl]
+impl PromotableAllocationInterface for AllocaOp {
+    fn alloc_info(&self, ctx: &Context) -> Vec<AllocInfo> {
+        vec![AllocInfo {
+            ptr: self.get_result(ctx),
+            ty: self.result_pointee_type(ctx),
+        }]
+    }
+
+    fn default_value(
+        &self,
+        ctx: &mut Context,
+        inserter: &mut dyn Inserter,
+        alloc_info: &AllocInfo,
+    ) -> Result<Value> {
+        if alloc_info.ptr != self.get_result(ctx) {
+            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
+        }
+        let poison = PoisonOp::new(ctx, alloc_info.ty);
+        let poison_val = poison.get_result(ctx);
+        inserter.insert_op(ctx, &poison);
+        Ok(poison_val)
+    }
+
+    fn promote(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut dyn Rewriter,
+        alloc_infos: &[AllocInfo],
+    ) -> Result<()> {
+        if alloc_infos.len() != 1 || alloc_infos[0].ptr != self.get_result(ctx) {
+            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
+        }
+        rewriter.erase_operation(ctx, self.get_operation());
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl PromotableOpInterface for StoreOp {
+    fn promotion_kind(&self, ctx: &Context, alloc_info: &AllocInfo) -> PromotableOpKind {
+        if self.get_operand_address(ctx) == alloc_info.ptr {
+            PromotableOpKind::Store(self.get_operand_value(ctx))
+        } else {
+            PromotableOpKind::NonPromotableUse
+        }
+    }
+
+    fn promote(
+        &self,
+        ctx: &mut Context,
+        alloc_info_reaching_defs: &[(AllocInfo, Value)],
+        rewriter: &mut dyn Rewriter,
+    ) -> Result<()> {
+        if alloc_info_reaching_defs.len() != 1 {
+            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
+        }
+        let (alloc_info, _reaching_def) = &alloc_info_reaching_defs[0];
+        if self.get_operand_address(ctx) != alloc_info.ptr {
+            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
+        }
+        rewriter.erase_operation(ctx, self.get_operation());
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl PromotableOpInterface for LoadOp {
+    fn promotion_kind(&self, ctx: &Context, alloc_info: &AllocInfo) -> PromotableOpKind {
+        if self.get_operand_address(ctx) == alloc_info.ptr {
+            PromotableOpKind::Load
+        } else {
+            PromotableOpKind::NonPromotableUse
+        }
+    }
+
+    fn promote(
+        &self,
+        ctx: &mut Context,
+        alloc_info_reaching_defs: &[(AllocInfo, Value)],
+        rewriter: &mut dyn Rewriter,
+    ) -> Result<()> {
+        if alloc_info_reaching_defs.len() != 1 {
+            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
+        }
+        let (alloc_info, reaching_def) = &alloc_info_reaching_defs[0];
+        if self.get_operand_address(ctx) != alloc_info.ptr {
+            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
+        }
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![*reaching_def]);
+        Ok(())
+    }
+}
 
 // Implement [SideEffects] with `has_side_effects` returning `false`
 macro_rules! impl_side_effects_false {

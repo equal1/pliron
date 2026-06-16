@@ -1,7 +1,7 @@
 //! [Op]s defined in the LLVM dialect
 
 use pliron::{
-    arg_err, arg_err_noloc,
+    arg_err_noloc,
     attribute::{AttrObj, AttributeDict, attr_cast},
     basic_block::BasicBlock,
     builtin::{
@@ -23,7 +23,6 @@ use pliron::{
     context::{Context, Ptr},
     identifier::Identifier,
     indented_block, input_err,
-    irbuild::{inserter::Inserter, rewriter::Rewriter},
     irfmt::{
         self,
         parsers::{
@@ -36,9 +35,6 @@ use pliron::{
     location::{Located, Location},
     op::{Op, OpObj},
     operation::Operation,
-    opts::mem2reg::{
-        AllocInfo, PromotableAllocationInterface, PromotableOpInterface, PromotableOpKind,
-    },
     parsable::{IntoParseResult, Parsable, ParseResult, StateStream},
     printable::{self, Printable, indented_nl},
     region::Region,
@@ -501,48 +497,6 @@ impl AllocaOp {
         let op = AllocaOp { op };
         op.set_attr_alloca_element_type(ctx, TypeAttr::new(elem_type));
         op
-    }
-}
-
-#[derive(Error, Debug)]
-#[error("Register Promotion: Allocation info provided is not related to this operation")]
-pub struct UnrelatedAllocInfo;
-
-#[op_interface_impl]
-impl PromotableAllocationInterface for AllocaOp {
-    fn alloc_info(&self, ctx: &Context) -> Vec<AllocInfo> {
-        vec![AllocInfo {
-            ptr: self.get_result(ctx),
-            ty: self.result_pointee_type(ctx),
-        }]
-    }
-
-    fn default_value(
-        &self,
-        ctx: &mut Context,
-        inserter: &mut dyn Inserter,
-        alloc_info: &AllocInfo,
-    ) -> Result<Value> {
-        if alloc_info.ptr != self.get_result(ctx) {
-            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
-        }
-        let poison = PoisonOp::new(ctx, alloc_info.ty);
-        let poison_val = poison.get_result(ctx);
-        inserter.insert_op(ctx, &poison);
-        Ok(poison_val)
-    }
-
-    fn promote(
-        &self,
-        ctx: &mut Context,
-        rewriter: &mut dyn Rewriter,
-        alloc_infos: &[AllocInfo],
-    ) -> Result<()> {
-        if alloc_infos.len() != 1 || alloc_infos[0].ptr != self.get_result(ctx) {
-            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
-        }
-        rewriter.erase_operation(ctx, self.get_operation());
-        Ok(())
     }
 }
 
@@ -1487,34 +1441,6 @@ impl LoadOp {
     }
 }
 
-#[op_interface_impl]
-impl PromotableOpInterface for LoadOp {
-    fn promotion_kind(&self, ctx: &Context, alloc_info: &AllocInfo) -> PromotableOpKind {
-        if self.get_operand_address(ctx) == alloc_info.ptr {
-            PromotableOpKind::Load
-        } else {
-            PromotableOpKind::NonPromotableUse
-        }
-    }
-
-    fn promote(
-        &self,
-        ctx: &mut Context,
-        alloc_info_reaching_defs: &[(AllocInfo, Value)],
-        rewriter: &mut dyn Rewriter,
-    ) -> Result<()> {
-        if alloc_info_reaching_defs.len() != 1 {
-            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
-        }
-        let (alloc_info, reaching_def) = &alloc_info_reaching_defs[0];
-        if self.get_operand_address(ctx) != alloc_info.ptr {
-            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
-        }
-        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![*reaching_def]);
-        Ok(())
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum StoreOpVerifyErr {
     #[error("Store operand must have two operands")]
@@ -1554,34 +1480,6 @@ impl StoreOp {
                 0,
             ),
         }
-    }
-}
-
-#[op_interface_impl]
-impl PromotableOpInterface for StoreOp {
-    fn promotion_kind(&self, ctx: &Context, alloc_info: &AllocInfo) -> PromotableOpKind {
-        if self.get_operand_address(ctx) == alloc_info.ptr {
-            PromotableOpKind::Store(self.get_operand_value(ctx))
-        } else {
-            PromotableOpKind::NonPromotableUse
-        }
-    }
-
-    fn promote(
-        &self,
-        ctx: &mut Context,
-        alloc_info_reaching_defs: &[(AllocInfo, Value)],
-        rewriter: &mut dyn Rewriter,
-    ) -> Result<()> {
-        if alloc_info_reaching_defs.len() != 1 {
-            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
-        }
-        let (alloc_info, _reaching_def) = &alloc_info_reaching_defs[0];
-        if self.get_operand_address(ctx) != alloc_info.ptr {
-            return arg_err!(self.loc(ctx), UnrelatedAllocInfo);
-        }
-        rewriter.erase_operation(ctx, self.get_operation());
-        Ok(())
     }
 }
 
