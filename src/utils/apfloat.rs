@@ -37,7 +37,7 @@ use rustc_apfloat::ieee::{
 use thiserror::Error;
 
 pub use rustc_apfloat::{
-    Category, ExpInt, Float, Round, StatusAnd,
+    Category, ExpInt, Float, FloatConvert, Round, StatusAnd,
     ieee::{BFloat, Double, Float8E4M3FN, Float8E5M2, Half, Quad, Single, X87DoubleExtended},
 };
 
@@ -79,6 +79,24 @@ pub fn double_to_f64(value: Double) -> f64 {
 /// Convert from Rust [f64] to [rustc_apfloat]'s [Double].
 pub fn f64_to_double(value: f64) -> Double {
     Double::from_bits(value.to_bits().into())
+}
+
+/// Convert from [rustc_apfloat]'s [Half] (IEEE 16-bit) to Rust [f64].
+///
+/// Widening from `Half` to `Double` is exact, so no precision is lost.
+pub fn half_to_f64(value: Half) -> f64 {
+    let mut loses_info = false;
+    let double: Double = value.convert(&mut loses_info).value;
+    double_to_f64(double)
+}
+
+/// Convert from Rust [f64] to [rustc_apfloat]'s [Half] (IEEE 16-bit).
+///
+/// Narrowing rounds to the nearest representable `Half` (ties to even); the
+/// value may lose precision or overflow to infinity.
+pub fn f64_to_half(value: f64) -> Half {
+    let mut loses_info = false;
+    f64_to_double(value).convert(&mut loses_info).value
 }
 
 #[derive(Debug, Error)]

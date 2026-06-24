@@ -1,0 +1,17 @@
+[package]
+name = "pliron-python"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme = "README.md"
+license.workspace = true
+description = "Python bindings for pliron"
+
+[lib]
+name = "pliron"
+crate-type = ["cdylib"]
+
+[dependencies]
+pliron = { path = "../", features = ["python"] }
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
+pyo3-stub-gen = "0.6"

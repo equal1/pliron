@@ -29,6 +29,9 @@ pub use dyn_clone;
 // Export inventory as pliron::inventory for procedural macros.
 #[cfg(target_family = "wasm")]
 pub use inventory;
+// Export pyo3 as pliron::pyo3 for procedural macros (only when python is enabled).
+#[cfg(feature = "python")]
+pub use pyo3;
 
 pub mod analyses;
 pub mod attribute;
@@ -57,6 +60,10 @@ pub mod symbol_table;
 pub mod r#type;
 pub mod uniqued_any;
 pub mod utils;
+
+/// Python bindings (requires the `python` cargo feature).
+#[cfg(feature = "python")]
+pub mod python;
 pub mod value;
 
 pub mod deps;
