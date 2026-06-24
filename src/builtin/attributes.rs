@@ -1,7 +1,7 @@
 use core::hash::{Hash, Hasher};
 
 use alloc::{boxed::Box, string::String, vec::Vec};
-use pliron::derive::{attr_interface_impl, pliron_attr};
+use pliron::derive::{attr_interface_impl, pliron_attr, pliron_attr_impl};
 use rustc_apfloat::Float;
 use thiserror::Error;
 
@@ -66,6 +66,7 @@ impl From<IdentifierAttr> for Identifier {
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub struct StringAttr(String);
 
+#[pliron_attr_impl]
 impl StringAttr {
     /// Create a new [StringAttr].
     pub fn new(value: String) -> Self {
@@ -128,6 +129,7 @@ impl Parsable for StringAttr {
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub struct BoolAttr(bool);
 
+#[pliron_attr_impl]
 impl BoolAttr {
     /// Create a new [BoolAttr].
     pub fn new(value: bool) -> Self {
@@ -201,6 +203,37 @@ impl IntegerAttr {
     /// Get the type of the attribute.
     pub fn get_type(&self) -> TypedHandle<IntegerType> {
         self.ty
+    }
+}
+
+/// While we figure ot API int we will define PyIntegerAttr manually
+
+#[cfg(feature = "python")]
+use alloc::string::ToString;
+
+#[cfg(feature = "python")]
+#[::pyo3::pymethods]
+impl PyIntegerAttr {
+    #[staticmethod]
+    fn new(value: i64, ty: &::pyo3::Bound<'_, ::pyo3::PyAny>) -> ::pyo3::PyResult<Self> {
+        let ty_handle = ::pliron::python::types::type_handle_from_any(ty)?;
+        let ctx = ::pliron::python::get_ctx()?;
+        let width = {
+            let ty_guard = ty_handle.deref(ctx);
+            let int_ty = ty_guard.downcast_ref::<IntegerType>().ok_or_else(|| {
+                ::pliron::python::PlironError::new_err("Expected an integer type")
+            })?;
+            int_ty.width() as usize
+        };
+        let ty = TypedHandle::<IntegerType>::from_handle(ty_handle, ctx).map_err(::pliron::python::to_py_err)?;
+        let val = APInt::from_str(&value.to_string(), width, 10).map_err(::pliron::python::to_py_err)?;
+        Ok(Self {
+            inner: IntegerAttr::new(ty, val),
+        })
+    }
+
+    fn value(&self) -> ::pyo3::PyResult<i64> {
+        Ok(self.inner.value().to_i64())
     }
 }
 
@@ -525,6 +558,7 @@ impl Verify for VecAttr {
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash)]
 pub struct UnitAttr;
 
+#[pliron_attr_impl]
 impl UnitAttr {
     pub fn new() -> Self {
         UnitAttr

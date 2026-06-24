@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["pliron-derive", "pliron-llvm", "pliron-llvm/llvm-opt"]
+members = ["pliron-derive", "pliron-llvm", "pliron-llvm/llvm-opt", "pliron-python"]
 
 [package]
 name = "pliron"
@@ -27,6 +27,7 @@ keywords = ["pliron", "llvm", "mlir", "compiler"]
 [features]
 std = []
 default = ["std"]
+python = ["dep:pyo3"]
 
 [dependencies]
 pliron-derive = { path = "./pliron-derive", version = "0" }
@@ -51,6 +52,11 @@ spin = "0"
 inventory = "0"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 linkme = "0"
+
+[dependencies.pyo3]
+version = "0.23"
+features = ["abi3-py39", "multiple-pymethods"]
+optional = true
 
 [dev-dependencies]
 expect-test.workspace = true
@@ -88,6 +94,8 @@ once_vec = "0"
 downcast-rs = "2"
 regex = "1"
 dyn-clone = "1"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3-stub-gen = "0.6"
 
 [[example]]
 name = "kaleidoscope"

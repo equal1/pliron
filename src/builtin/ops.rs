@@ -3,8 +3,20 @@ use alloc::{
     vec,
     vec::Vec,
 };
+
+use pliron::derive::{op_interface_impl, pliron_op, pliron_op_impl};
 use thiserror::Error;
 
+use super::{
+    attr_interfaces::TypedAttrInterface,
+    attributes::TypeAttr,
+    op_interfaces::{
+        self, IsTerminatorInterface, IsolatedFromAboveInterface, NOpdsInterface,
+        OneRegionInterface, OneResultInterface, SingleBlockRegionInterface, SymbolOpInterface,
+        SymbolTableInterface,
+    },
+    types::{FunctionType, UnitType},
+};
 use crate::{
     attribute::{AttrObj, AttributeDict, attr_cast},
     basic_block::BasicBlock,
@@ -34,18 +46,8 @@ use crate::{
     region::Region,
     result::Result,
     r#type::{TypeHandle, Typed, TypedHandle},
+    value::Value,
     verify_err,
-};
-use pliron::derive::{op_interface_impl, pliron_op};
-
-use super::{
-    attr_interfaces::TypedAttrInterface,
-    attributes::TypeAttr,
-    op_interfaces::{
-        self, IsolatedFromAboveInterface, NOpdsInterface, OneRegionInterface, OneResultInterface,
-        SingleBlockRegionInterface, SymbolOpInterface, SymbolTableInterface,
-    },
-    types::{FunctionType, UnitType},
 };
 
 /// Represents a module, a top level container operation.
@@ -126,6 +128,7 @@ impl Parsable for ModuleOp {
     }
 }
 
+#[pliron_op_impl]
 impl ModuleOp {
     /// Create a new [ModuleOp].
     /// The underlying [Operation] is not linked to a [BasicBlock].
@@ -159,6 +162,7 @@ impl ModuleOp {
 )]
 pub struct FuncOp;
 
+#[pliron_op_impl]
 impl FuncOp {
     /// Create a new [FuncOp].
     /// The returned function has a single region with an empty `entry` block.
@@ -178,7 +182,9 @@ impl FuncOp {
 
         opop
     }
+}
 
+impl FuncOp {
     /// Get the function signature (type).
     pub fn get_type(&self, ctx: &Context) -> TypeHandle {
         attr_cast::<dyn TypedAttrInterface>(&*self.get_attr_func_type(ctx).unwrap())
@@ -400,5 +406,68 @@ impl ForwardRefOp {
             0,
         );
         ForwardRefOp { op }
+    }
+}
+
+/// An undrealized conversion from one set of types to antoher
+/// See MLIR's [UnrealizedConversionCastOp](https://mlir.llvm.org/docs/Dialects/Builtin/#builtinunrealized_conversion_cast-unrealizedconversioncastop)
+///
+#[pliron_op(
+    name = "builtin.unrealized_conversion_cast",
+    interfaces = [
+    ],
+    format = "`%`$0 ` -> ` type($0)",
+    verifier = "succ",
+)]
+pub struct UnrealizedConversionCastOp;
+
+#[pliron_op_impl]
+impl UnrealizedConversionCastOp {
+    /// Create a new [UnrealizedConversionCastOp].
+    pub fn new(ctx: &mut Context, inputs: Vec<Value>, result_types: Vec<TypeHandle>) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            result_types,
+            inputs,
+            vec![],
+            0,
+        );
+        UnrealizedConversionCastOp { op }
+    }
+}
+
+/// A minimal void terminator suitable for `builtin.func` bodies.
+///
+/// Pliron's [`FuncOp`] requires its body block to end with a terminator
+/// ([`IsTerminatorInterface`]) but ships no return-style op of its own. This
+/// op fills that gap — no operands, no results, no semantics beyond
+/// "structural terminator". For functions that return values, dialects can
+/// supply their own typed return op; this one is for the void case (the
+/// common shape in tests and in dialects whose state-passing happens through
+/// other means, e.g. the qc dialect's reference semantics).
+///
+/// See MLIR's `func.return` for the typed analogue in the func dialect.
+#[pliron_op(
+    name = "builtin.return",
+    format = "",
+    interfaces = [IsTerminatorInterface, NOpdsInterface<0>, NResultsInterface<0>],
+    verifier = "succ",
+)]
+pub struct ReturnOp;
+
+#[pliron_op_impl]
+impl ReturnOp {
+    /// Create a new [`ReturnOp`].
+    pub fn new(ctx: &mut Context) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            vec![],
+            vec![],
+            vec![],
+            0,
+        );
+        ReturnOp { op }
     }
 }

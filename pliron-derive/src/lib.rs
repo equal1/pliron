@@ -1,10 +1,14 @@
 mod derive_attr;
+mod derive_attr_impl;
 mod derive_entity;
 mod derive_format;
 mod derive_op;
+mod derive_op_impl;
 mod derive_type;
+mod derive_type_impl;
 mod interfaces;
 mod irfmt;
+mod py_type_mapper;
 mod verify_succ;
 
 use proc_macro::TokenStream;
@@ -768,6 +772,78 @@ pub fn pliron_type(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn pliron_attr(args: TokenStream, input: TokenStream) -> TokenStream {
     to_token_stream(derive_entity::pliron_attr(args, input))
+}
+
+/// `#[pliron_attr_impl]`: Expose all public methods of an attribute `impl` block to Python.
+///
+/// Apply this to an `impl YourAttr { ... }` block. The macro emits the original Rust `impl`
+/// block unchanged, and additionally generates a
+/// `#[cfg(feature = "python")] #[pyo3::pymethods] impl PyYourAttr { ... }` block containing
+/// Python-visible wrappers for every `pub` function in the block.
+///
+///
+/// ## Example
+/// ```
+/// use pliron::derive::{pliron_attr, pliron_attr_impl};
+///
+/// #[pliron_attr(name = "test.string_attr", format, verifier = "succ")]
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// pub struct StringAttr(String);
+///
+/// #[pliron_attr_impl]
+/// impl StringAttr {
+///     pub fn new(value: String) -> Self { StringAttr(value) }
+///     pub fn value(&self) -> String { self.0.clone() }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn pliron_attr_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    to_token_stream(derive_attr_impl::pliron_attr_impl(item))
+}
+
+/// `#[pliron_op_impl]`: Expose all public methods of an op `impl` block to Python.
+///
+/// Apply this to an `impl YourOp { ... }` block. The macro emits the original Rust `impl`
+/// block unchanged, and additionally generates a
+/// `#[cfg(feature = "python")] #[pyo3::pymethods] impl PyYourOp { ... }` block containing
+/// Python-visible wrappers for every `pub` function in the block.
+///
+/// Behaves analogously to [`macro@pliron_attr_impl`] / [`macro@pliron_type_impl`]:
+/// - Ops are stored as `Ptr<Operation>`. The macro injects `&Context` from the
+///   thread-local only when a parameter type names it.
+/// - `Self` return values are wrapped as `PyYourOp { ptr: my_op.op }`.
+///
+/// ## Example
+/// ```ignore
+/// #[pliron_op(name = "test.my_op")]
+/// pub struct MyOp;
+///
+/// #[pliron_op_impl]
+/// impl MyOp {
+///     pub fn callee_name(&self, ctx: &Context) -> String { /* ... */ }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn pliron_op_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    to_token_stream(derive_op_impl::pliron_op_impl(item))
+}
+
+/// `#[pliron_type_impl]`: Expose all public methods of a type `impl` block to Python.
+///
+/// Apply this to an `impl YourType { ... }` block. The macro emits the original Rust `impl`
+/// block unchanged, and additionally generates a
+/// `#[cfg(feature = "python")] #[pyo3::pymethods] impl PyYourType { ... }` block containing
+/// Python-visible wrappers for every `pub` function in the block.
+///
+/// Behaves identically to [`macro@pliron_attr_impl`] except:
+/// - Types are stored as `Ptr<TypeObj>` (arena pointer), so dereferencing always requires a
+///   `&Context`. All instance method wrappers therefore always inject ctx and return `PyResult<T>`.
+/// - `Self` return values are wrapped as `PyYourType { ptr: val.into() }`.
+/// - `TypePtr<Self>` return values are also wrapped as `PyYourType`.
+/// - `TypePtr<OtherType>` return values are wrapped as the generic `PyType`.
+#[proc_macro_attribute]
+pub fn pliron_type_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    to_token_stream(derive_type_impl::pliron_type_impl(item))
 }
 
 /// `#[pliron_op(...)]`: Unified macro for defining IR operations.
