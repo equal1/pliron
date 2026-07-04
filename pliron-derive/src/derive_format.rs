@@ -598,6 +598,20 @@ impl PrintableBuilder<OpPrinterState> for DeriveOpPrintable {
                 let types = ::pliron::irfmt::printers::iter_with_sep(types, #sep);
                 ::pliron::printable::Printable::fmt(&types, ctx, state, fmt)?;
             })
+        } else if d.name == "typesig" {
+            if !d.args.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    input.ident.clone(),
+                    "The `typesig` directive takes no arguments".to_string(),
+                ));
+            }
+            Ok(quote! {
+                let op = self.get_operation().deref(ctx);
+                let arguments = op.operand_types(ctx).collect();
+                let results = op.result_types().collect();
+                let typesig = ::pliron::r#type::TypeSig { arguments, results };
+                ::pliron::printable::Printable::fmt(&typesig, ctx, state, fmt)?;
+            })
         } else if d.name == "attr_dict" {
             Ok(quote! {
                 let self_op = self.get_operation().deref(ctx);
@@ -1500,6 +1514,28 @@ impl ParsableBuilder<OpParserState> for DeriveOpParsable {
                     .parse_stream(state_stream)
                     .into_result()?
                     .0;
+            })
+        } else if d.name == "typesig" {
+            if !d.args.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    input.ident.clone(),
+                    "The `typesig` directive takes no arguments".to_string(),
+                ));
+            }
+            let result_types_var_name = format_ident!("result_types");
+            if matches!(&state.result_types, ElementSpec::Individual(result_types) if !result_types.is_empty())
+            {
+                return Err(syn::Error::new_spanned(
+                    input.ident.clone(),
+                    "Cannot mix typesig directive with numbered result types".to_string(),
+                ));
+            }
+            state.result_types = ElementSpec::All(result_types_var_name.clone());
+            Ok(quote! {
+                let type_sig =
+                    ::pliron::r#type::TypeSig::parser(())
+                    .parse_stream(state_stream).into_result()?.0;
+                let #result_types_var_name = type_sig.results;
             })
         } else if d.name == "successors" {
             let Some(Elem::Directive(sep)) = &d.args.first() else {

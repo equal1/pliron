@@ -82,7 +82,7 @@ fn one_result_zero_operands() {
         .expect("OneResultZeroOperands parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.one_result_zero_operands : builtin.integer si64 !1;
@@ -126,7 +126,7 @@ fn one_result_zero_operands_canonical() {
         .expect("OneResultZeroOperandsCanonical parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.one_result_zero_operands_canonical () [] []: <() -> (builtin.integer si64)> !1;
@@ -171,7 +171,7 @@ fn one_result_one_operand() {
         .expect("OneResultOneOperand parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.one_result_zero_operands : builtin.integer si64 !1;
@@ -217,7 +217,7 @@ fn two_result_two_operands() {
         .expect("TwoResultTwoOperands parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.one_result_zero_operands : builtin.integer si64 !1;
@@ -263,7 +263,7 @@ fn two_results_one_operand() {
         .expect("TwoResultsOneOperand parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.one_result_zero_operands : builtin.integer si64 !1;
@@ -275,6 +275,53 @@ fn two_results_one_operand() {
         !0 = @[<in-memory>: line: 2, column: 11], []
         !1 = @[<in-memory>: line: 3, column: 13], [builtin_debug_info = builtin.debug_info [res0]]
         !2 = @[<in-memory>: line: 4, column: 13], [builtin_debug_info = builtin.debug_info [res1a, res1b]]
+        !3 = @[<in-memory>: line: 5, column: 13], []
+        !4 = @[<in-memory>: line: 1, column: 1], []
+    "#]]
+    .assert_eq(&res.disp(ctx).to_string());
+
+    assert!(verify_operation(res, ctx).is_ok());
+}
+
+#[format_op("$0 ` : ` typesig")]
+#[def_op("test.one_result_one_operand_typesig")]
+#[derive_op_interface_impl(NOpdsInterface<1>, NResultsInterface<1>, OneResultInterface)]
+#[verify_succ]
+struct OneResultOneOperandTypeSigOp {}
+
+#[test]
+fn one_result_one_operand_typesig() {
+    let ctx = &mut Context::new();
+
+    let printed = "builtin.func @testfunc: builtin.function <() -> ()> {
+          ^entry():
+            res0 = test.one_result_zero_operands : builtin.integer si64;
+            res1 = test.one_result_one_operand_typesig res0 : (builtin.integer si64) -> (builtin.integer si64);
+            test.return res1
+        }";
+
+    let state_stream = state_stream_from_iterator(
+        printed.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+
+    let (res, _) = Operation::top_level_parser()
+        .parse(state_stream)
+        .expect("OneResultOneOperandTypeSig parser failed");
+
+    expect![[r#"
+        builtin.func @testfunc: builtin.function <() -> ()> 
+        {
+          ^entry_block1v1() !0:
+            res0_v0 = test.one_result_zero_operands : builtin.integer si64 !1;
+            res1_v1 = test.one_result_one_operand_typesig res0_v0 : (builtin.integer si64) -> (builtin.integer si64) !2;
+            test.return res1_v1 !3
+        } !4
+
+        outlined_attributes:
+        !0 = @[<in-memory>: line: 2, column: 11], []
+        !1 = @[<in-memory>: line: 3, column: 13], [builtin_debug_info = builtin.debug_info [res0]]
+        !2 = @[<in-memory>: line: 4, column: 13], [builtin_debug_info = builtin.debug_info [res1]]
         !3 = @[<in-memory>: line: 5, column: 13], []
         !4 = @[<in-memory>: line: 1, column: 1], []
     "#]]
@@ -310,7 +357,7 @@ fn attr_op() {
         .expect("AttrOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.attr_op <0: si64>:builtin.integer si64 !1;
@@ -356,7 +403,7 @@ fn attr_op2() {
         .expect("AttrOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.attr_op2 "Hello World" :builtin.integer si64 !1;
@@ -389,7 +436,7 @@ fn attr_op2() {
         .expect("AttrOp parser failed with optional attribute");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block2v1() !0:
             res0_v1 = test.attr_op2 "Hello World" <42: si64>:builtin.integer si64 !1;
@@ -435,7 +482,7 @@ fn attr_op2_labeled() {
         .expect("AttrOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.attr_op2_labeled name : "Hello World" :builtin.integer si64 !1;
@@ -468,7 +515,7 @@ fn attr_op2_labeled() {
         .expect("AttrOp parser failed with optional attribute");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block2v1() !0:
             res0_v1 = test.attr_op2_labeled name : "Hello World" value : <42: si64>:builtin.integer si64 !1;
@@ -514,7 +561,7 @@ fn attr_op2_labeled_delimited() {
         .expect("AttrOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.attr_op2_labeled_delimited <name : "Hello World"> :builtin.integer si64 !1;
@@ -547,7 +594,7 @@ fn attr_op2_labeled_delimited() {
         .expect("AttrOp parser failed with optional attribute");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block2v1() !0:
             res0_v1 = test.attr_op2_labeled_delimited <name : "Hello World"> <<value : <42: si64>>>:builtin.integer si64 !1;
@@ -593,7 +640,7 @@ fn attr_op2_delimited() {
         .expect("AttrOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.attr_op2_delimited <"Hello World"> :builtin.integer si64 !1;
@@ -626,7 +673,7 @@ fn attr_op2_delimited() {
         .expect("AttrOp parser failed with optional attribute");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block2v1() !0:
             res0_v1 = test.attr_op2_delimited <"Hello World"> [[<42: si64>]]:builtin.integer si64 !1;
@@ -669,7 +716,7 @@ fn attr_op3() {
         .expect("AttrOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.attr_op3 builtin.integer <0: si64>:builtin.integer si64 !1;
@@ -718,7 +765,7 @@ fn if_op() {
         .expect("IfOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block2v1() !0:
             res0_v0 = test.attr_op <0: si64>:builtin.integer si64 !1;
@@ -781,7 +828,7 @@ fn if_else_op() {
         .expect("IfOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block3v1() !0:
             res0_v0 = test.attr_op <0: si64>:builtin.integer si64 !1;
@@ -845,7 +892,7 @@ fn br_op() {
         .expect("BrOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block2v1() !0:
             res0_v0 = test.attr_op <0: si64>:builtin.integer si64 !1;
@@ -898,7 +945,7 @@ fn multiple_successors_op() {
         .expect("MultipleSuccessorsOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block3v1() !0:
             res0_v0 = test.attr_op <0: si64>:builtin.integer si64 !1;
@@ -963,7 +1010,7 @@ fn multiple_regions_op() {
         .expect("MultipleRegionsOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block3v1() !0:
             res_v0 = test.attr_op <0: si64>:builtin.integer si64 !1;
@@ -1028,7 +1075,7 @@ fn attr_dict_op() {
         .expect("AttrDictOp parser failed");
 
     expect![[r#"
-        builtin.func @testfunc: builtin.function <()->()> 
+        builtin.func @testfunc: builtin.function <() -> ()> 
         {
           ^entry_block1v1() !0:
             res0_v0 = test.attr_op <3: si64>:builtin.integer si64 !1;
