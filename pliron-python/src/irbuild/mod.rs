@@ -1,4 +1,4 @@
-//! Python bindings for [`crate::irbuild`], exposed as the `pliron.irbuild`
+//! Python bindings for [`::pliron::irbuild`], exposed as the `pliron.irbuild`
 //! Python submodule.
 //!
 //! Layout convention: each folder under `src/python/` is one Python submodule,
@@ -12,12 +12,12 @@ pub mod rewriter;
 
 use pyo3::prelude::*;
 
-use crate::irbuild::IRStatus;
+use ::pliron::irbuild::IRStatus;
 
 /// Build the `pliron.irbuild` submodule and register this folder's classes
 /// into it. Called by `register_core_types`.
 pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = crate::python::get_or_create_submodule(parent, "irbuild")?;
+    let m = crate::get_or_create_submodule(parent, "irbuild")?;
     m.add_class::<PyIRStatus>()?;
     m.add_class::<inserter::PyOpInsertionPoint>()?;
     m.add_class::<inserter::PyBlockInsertionPoint>()?;

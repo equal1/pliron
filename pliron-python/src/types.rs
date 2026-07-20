@@ -2,9 +2,9 @@
 
 use pyo3::{ffi::Py_hash_t, prelude::*};
 
-use alloc::{format, string::String, vec::Vec};
+use std::{format, string::String, vec::Vec};
 
-use crate::{common_traits::Verify, printable::Printable, r#type::TypeHandle};
+use ::pliron::{common_traits::Verify, printable::Printable, r#type::TypeHandle};
 
 /// A handle to a uniqued pliron type.
 ///
@@ -49,11 +49,10 @@ impl PyType {
         self.ptr == other.ptr
     }
 
-    fn __hash__(&self) ->  PyResult<Py_hash_t>  {
+    fn __hash__(&self) -> PyResult<Py_hash_t> {
         let ctx = super::get_ctx()?;
         Ok(u64::from(self.ptr.deref(ctx).hash_type()) as Py_hash_t)
     }
-
 }
 
 /// Coerce any Python "type" object into a [`TypeHandle`].

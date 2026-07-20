@@ -44,8 +44,8 @@ compare and hash equal.
 
 ## Type / builtin type classes
 
-Builtin: `IntegerType`, `FunctionType`, `UnitType` (also `FP32Type`, `FP64Type`
-registered).
+Builtin: `IntegerType`, `FunctionType`, `UnitType` (also `FP16Type`, `FP32Type`,
+`FP64Type` registered).
 
 | Method | Purpose |
 |---|---|
@@ -62,7 +62,9 @@ Uniquing: equal params → identical object (`==`, equal `hash`). Prints as
 
 ## Attribute / builtin attribute classes
 
-Builtin: `StringAttr`, `IntegerAttr`, `BoolAttr`, … (see `__init__.py`).
+Builtin: `StringAttr`, `IntegerAttr`, `BoolAttr`, `UnitAttr`, `TypeAttr`,
+`IdentifierAttr`, `FPHalfAttr`/`FPSingleAttr`/`FPDoubleAttr`, `DictAttr`,
+`VecAttr`, … (see `src/dialects/builtin.rs`).
 
 | Method | Purpose |
 |---|---|
@@ -77,7 +79,8 @@ Builtin: `StringAttr`, `IntegerAttr`, `BoolAttr`, … (see `__init__.py`).
 
 ## Operation / builtin op classes
 
-Builtin: `ModuleOp`, `FuncOp`, `ForwardRefOp`.
+Builtin: `ModuleOp`, `FuncOp`, `ForwardRefOp`, `ConstantOp`, `ReturnOp`,
+`UnrealizedConversionCastOp`.
 
 | Method | Purpose |
 |---|---|

@@ -1,10 +1,11 @@
 # 03 — Hand-written core classes
 
-These are the fixed IR wrappers in `src/python/`. They are hand-written (not
-derive-generated) because they wrap pliron's structural primitives, which are not
-themselves dialect `#[pliron_*]` definitions. Every one is `#[pyclass(unsendable)]`
-and resolves its data through the thread-local context via `get_ctx()` /
-`get_ctx_mut()`.
+These are the fixed IR wrappers directly under `pliron-python/src/`. They are
+hand-written (not derive-generated) because they wrap pliron's structural
+primitives, which are not themselves dialect `#[pliron_*]` definitions. Every
+one is `#[pyclass(unsendable)]` and resolves its data through the thread-local
+context via `get_ctx()` / `get_ctx_mut()` (defined in the crate root,
+`src/lib.rs`).
 
 A shared shape runs through all of them:
 
@@ -14,7 +15,7 @@ A shared shape runs through all of them:
 - `__str__`/`__repr__` print via `Printable::disp(ctx)`; `verify()` maps errors
   through `to_py_err`; `__eq__`/`__hash__` use the underlying handle's identity.
 
-## `PyContext` — `src/python/context.rs`
+## `PyContext` — `src/context.rs`
 
 The only stateful one. Owns `Option<Box<Context>>`, is used as a context manager.
 
@@ -26,7 +27,7 @@ The only stateful one. Owns `Option<Box<Context>>`, is used as a context manager
 See [01-architecture.md](01-architecture.md#the-context-model) for the lifetime
 and single-active-context rules.
 
-## `PyOperation` — `src/python/operation.rs`
+## `PyOperation` — `src/operation.rs`
 
 `PyOperation { ptr: Ptr<Operation> }`. This is the rich structural-inspection
 surface; typed op wrappers (`PyModuleOp`, …) project to/from it.
@@ -44,7 +45,7 @@ surface; typed op wrappers (`PyModuleOp`, …) project to/from it.
 
 `set_attribute` is the consumer of the `into_attr()` convention: it accepts either
 a generic `PyAttribute` or any typed attribute object, coercing the latter by
-calling its `into_attr()` method ([`operation.rs:260`](../../src/python/operation.rs)):
+calling its `into_attr()` method ([`operation.rs:260`](../src/operation.rs)):
 
 ```rust
 let attr = if let Ok(attr) = attr.extract::<PyRef<'_, PyAttribute>>() {
@@ -55,7 +56,7 @@ let attr = if let Ok(attr) = attr.extract::<PyRef<'_, PyAttribute>>() {
 };
 ```
 
-## `PyType` — `src/python/types.rs`
+## `PyType` — `src/types.rs`
 
 `PyType { ptr: TypeHandle }` — the generic type face. Types are globally uniqued
 and immutable, so `__eq__` is handle identity and `__hash__` uses the type's own
@@ -67,7 +68,7 @@ Concrete typed wrappers (`PyIntegerType`, …) are derive-generated and wrap a
 `TypedHandle<T>`; they project to/from `PyType` via `to_type`/`from_type`. The
 full type-layer design is in [06-type-exposure.md](06-type-exposure.md).
 
-## `PyAttribute` — `src/python/attributes.rs`
+## `PyAttribute` — `src/attributes.rs`
 
 `PyAttribute { inner: AttrObj }`. Attributes are *not* uniqued; each wrapper owns
 a boxed clone.
@@ -75,7 +76,7 @@ a boxed clone.
 - `attr_name`, `clone_attr`, `__str__`/`__repr__`, `verify`.
 - `__eq__`/`__ne__` via `eq_attr`; `__hash__` via `hash_attr`.
 
-## `PyValue` — `src/python/value.rs`
+## `PyValue` — `src/value.rs`
 
 `PyValue { val: Value }` — an SSA value (op result or block argument).
 
@@ -84,7 +85,7 @@ a boxed clone.
 - Use-def: `num_uses`, `is_used`, `users`, `replace_all_uses_with(other)`.
 - `__str__`/`__repr__`, `verify`, `__eq__`/`__hash__`.
 
-## `PyBasicBlock` — `src/python/basic_block.rs`
+## `PyBasicBlock` — `src/basic_block.rs`
 
 `PyBasicBlock { ptr: Ptr<BasicBlock> }`.
 
@@ -93,7 +94,7 @@ a boxed clone.
 - Navigation: `label`, `parent_region`, `parent_op`, `successors`.
 - `__str__`/`__repr__`, `verify`, `__eq__`/`__hash__`.
 
-## `PyRegion` — `src/python/region.rs`
+## `PyRegion` — `src/region.rs`
 
 `PyRegion { ptr: Ptr<Region> }`.
 
@@ -103,7 +104,7 @@ a boxed clone.
 
 ## `pliron.irbuild` — inserter / rewriter / listeners
 
-Mirrors `src/python/irbuild/*` (folder → submodule). The key classes:
+Mirrors `src/irbuild/*` (folder → submodule). The key classes:
 
 **Insertion points** (`OpInsertionPoint`, `BlockInsertionPoint`) — first-class
 objects built by static constructors (`at_block_end(block)`,
@@ -155,9 +156,9 @@ map to Python).
 **Native listeners**: `DummyListener` (no-op) and `Recorder` (records events;
 `len()`, `events()`, `clear()`, `is_empty()`), both valid `listener=` values.
 
-## `PyIRStatus` — `src/python/irbuild/mod.rs`
+## `PyIRStatus` — `src/irbuild/mod.rs`
 
-Python binding for `IRStatus`, exposed as `pliron.IRStatus` with `Unchanged` /
+Python binding for `IRStatus`, exposed as `pliron.irbuild.IRStatus` with `Unchanged` /
 `Changed` variants. It is truthy when the IR was changed, so it reads either as
 an enum comparison or a plain condition.
 

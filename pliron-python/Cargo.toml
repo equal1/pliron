@@ -8,10 +8,21 @@ license.workspace = true
 description = "Python bindings for pliron"
 
 [lib]
-name = "pliron"
-crate-type = ["cdylib"]
+name = "pliron_python"
+# rlib: downstream dialect crates link this to expose their own Python bindings.
+# cdylib: maturin builds this into the `pliron` wheel (with pyo3/extension-module
+# enabled via pyproject.toml — deliberately NOT a cargo feature here, so rlib
+# consumers don't inherit it).
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-pliron = { path = "../", features = ["python"] }
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
+pliron = { path = "../", version = "0" }
+pliron-python-derive = { path = "../pliron-python-derive", version = "0" }
+pyo3 = { version = "0.23", features = ["abi3-py39", "multiple-pymethods"] }
 pyo3-stub-gen = "0.6"
+rustc-hash.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+inventory = "0"
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+linkme = "0"

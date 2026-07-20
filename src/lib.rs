@@ -30,10 +30,6 @@ pub use inventory;
 /// A wrapper type that allows collecting any type with [pliron::inventory::collect!].
 #[cfg(target_family = "wasm")]
 pub struct InventoryWrapper<T: 'static>(pub &'static T);
-// Export pyo3 as pliron::pyo3 for procedural macros (only when python is enabled).
-#[cfg(feature = "python")]
-pub use pyo3;
-
 pub mod analyses;
 pub mod attribute;
 pub mod basic_block;
@@ -62,9 +58,6 @@ pub mod r#type;
 pub mod uniqued_any;
 pub mod utils;
 
-/// Python bindings (requires the `python` cargo feature).
-#[cfg(feature = "python")]
-pub mod python;
 pub mod value;
 
 pub mod std_deps;

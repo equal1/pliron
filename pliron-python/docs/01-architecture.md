@@ -2,65 +2,83 @@
 
 ## Crate layout
 
-There are three Rust pieces and one Python package:
+There are four Rust pieces and one Python package:
 
 | Piece | Path | Role |
 |---|---|---|
-| Core binding module | `src/python/` (in the `pliron` crate, gated by feature `python`) | Hand-written `#[pyclass]` wrappers for the fixed IR entities + inserter/rewriter + the registration machinery and `PyMap` bridge. |
-| Derive codegen | `pliron-derive/src/` | Emits a `Py<Name>` `#[pyclass]` for every dialect `#[pliron_type]` / `#[pliron_attr]` / `#[pliron_op]`. |
-| Assembly crate | `pliron-python/` | A `cdylib` that depends on `pliron` with `features = ["python"]` and exposes the `#[pymodule] fn pliron(...)`. **This is the importable extension module.** |
+| Core IR crate | `pliron` (repo root) | **100% Python-free** — no pyo3 dependency, no `python` feature. Its only contribution to the bindings is the reflect token exports emitted by `pliron-derive` (below), plus a few Python-agnostic `pub` API additions the out-of-crate codegen needs. |
+| IR derive macros | `pliron-derive/src/` | `def_op`/`def_attribute`/`def_type` (and the unified `pliron_op`/`pliron_attr`/`pliron_type`) additionally emit, per item, an inert `#[macro_export] macro_rules! __pliron_reflect_<kind>_<Ident>` **token export** ([`reflect.rs`](../../pliron-derive/src/reflect.rs)); the `pliron_*_impl` hooks do the same for `impl` blocks. No Python codegen lives here. |
+| Python codegen | `pliron-python-derive/src/` | Proc-macro crate holding **all** Python codegen: emits a `Py<Name>` `#[pyclass]` (and `#[pymethods]` impl mirrors) either from a reflect export (`py_*_from_export!`) or as stacked attributes (`#[py_op]`, …). |
+| Bindings crate | `pliron-python/` | `rlib` + `cdylib` (lib name `pliron_python`). Hand-written `#[pyclass]` wrappers for the fixed IR entities + inserter/rewriter + the registration machinery and `PyMap` bridge, the builtin-dialect wrappers (`src/dialects/builtin.rs`), and the `#[pymodule] fn _pliron`. **The cdylib is the importable extension module.** |
 | Python package | `pliron-python/python/pliron/` | `__init__.py` shim that re-exports the native module + hand-written `__init__.pyi` stubs. |
 
-The assembly crate owns no IR logic. Its entire job is the `#[pymodule]`
-([`pliron-python/src/lib.rs:14`](../src/lib.rs)):
+The `#[pymodule]` lives at the bottom of
+[`pliron-python/src/lib.rs`](../src/lib.rs):
 
 ```rust
 #[pymodule]
-fn pliron(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    ::pliron::python::register_core_types(m)?;   // fixed core classes
-    ::pliron::python::register_all_classes(m)?;  // derive-generated dialect classes
+fn _pliron(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    register_core_types(m)?;   // fixed core classes + PlironError
+    register_all_classes(m)?;  // generated dialect classes (linkme slice)
     Ok(())
 }
 ```
 
-## The `python` cargo feature
+## Dependency direction: `pliron` knows nothing about Python
 
-Defined minimally in the root [`Cargo.toml`](../../Cargo.toml):
+`pliron-python` depends on `pliron`, `pliron-python-derive`, and `pyo3`
+directly ([`pliron-python/Cargo.toml`](../Cargo.toml)):
 
 ```toml
-[features]
-python = ["dep:pyo3"]
+[lib]
+name = "pliron_python"
+crate-type = ["rlib", "cdylib"]
 
-[dependencies.pyo3]
-version = "0.23"
-features = ["abi3-py39", "multiple-pymethods"]
-optional = true
+[dependencies]
+pliron = { path = "../", version = "0" }
+pliron-python-derive = { path = "../pliron-python-derive", version = "0" }
+pyo3 = { version = "0.23", features = ["abi3-py39", "multiple-pymethods"] }
 ```
 
-- It only flips on the optional `pyo3` dependency. Nothing else is gated by it
-  directly.
 - `multiple-pymethods` is **required** because dialect classes routinely get two
   `#[pymethods]` blocks — one derive-generated, one hand-written constructor.
 - `abi3-py39` builds a single stable-ABI wheel that loads on CPython ≥ 3.9.
+- pyo3's `extension-module` feature is enabled via `pyproject.toml` (maturin),
+  deliberately *not* as a cargo feature, so `rlib` consumers don't inherit it.
 
-`src/lib.rs` re-exports the dependencies the generated code names by absolute
-path, so downstream dialect crates need no direct `pyo3`/`linkme` dependency:
+`pliron-python/src/lib.rs` re-exports the dependencies the generated code names
+by absolute path, so downstream dialect crates need no direct
+`pyo3`/`linkme`/`pliron-python-derive` dependency:
 
 ```rust
-#[cfg(feature = "python")]
-pub use pyo3;          // generated code names ::pliron::pyo3
-#[cfg(feature = "python")]
-pub mod python;
+pub use pliron_python_derive as derive;  // generated-code entry points
+pub use pyo3;                            // generated code names ::pliron_python::pyo3
+pub use linkme;                          // (inventory on wasm)
 ```
 
-Downstream dialects opt in with a passthrough feature only, e.g.
-`pliron-llvm/Cargo.toml`: `python = ["pliron/python"]`.
+Downstream dialects opt in with an optional dependency and a feature, e.g.
+`python = ["dep:pliron-python"]`, then gate per item with
+`#[cfg_attr(feature = "python", pliron_python::derive::py_op)]` — see
+[05-extending.md](05-extending.md).
 
-> **Important design property: exposure is all-or-nothing, not per-item.** The
-> derive macros emit the Python `#[pyclass]` *unconditionally*, wrapped in
-> `#[cfg(feature = "python")]`. There is no `python`-specific argument on
-> `#[pliron_type]`/`_attr`/`_op` to opt a single type in or out. Turn on the
-> feature and every derived type/attr/op in every linked dialect is exposed.
+> **Design property: exposure is per-item, chosen by the bindings side.** The
+> `#[pliron_type]`/`_attr`/`_op` macros themselves emit only the inert reflect
+> export — the item's crate ships no Python code at all. A wrapper exists for
+> exactly the items whose reflect export is invoked (or whose definition is
+> stacked with a `#[py_*]` attribute). `pliron-python` currently invokes the
+> exports for the whole builtin dialect, so builtin remains all-exposed.
+
+## End goal: an independent bindings repository
+
+`pliron-python` + `pliron-python-derive` are designed so they can eventually
+move to their own repository. The only cross-repo contract is pliron's public
+Rust API plus the **versioned reflect-envelope** format (`pliron_reflect_v1`,
+see [02-pymap-and-codegen.md](02-pymap-and-codegen.md)) — nothing in `pliron`
+or `pliron-derive` references the bindings. To support out-of-crate codegen,
+`pliron` gained a few small Python-agnostic additions:
+`TypedHandle::from_handle_unchecked`, `apfloat` half↔`f64` helpers, and `pub`
+visibility on some builtin attr/type payload fields (accessors are now
+generated outside the defining crate).
 
 ## The context model
 
@@ -68,11 +86,11 @@ pliron's IR lives in an arena owned by a `Context`; every handle (`Ptr<T>`,
 `Value`) is meaningless without the `Context` it indexes into. Rust threads that
 context explicitly through every call. Python cannot — it would be unbearable to
 pass `ctx` to every method — so the binding installs a **thread-local active
-context** ([`src/python/mod.rs:36`](../../src/python/mod.rs)):
+context** ([`pliron-python/src/lib.rs`](../src/lib.rs)):
 
 ```rust
 thread_local! {
-    static ACTIVE_CTX_PTR: Cell<*mut crate::context::Context> = Cell::new(null_mut());
+    static ACTIVE_CTX_PTR: Cell<*mut ::pliron::context::Context> = Cell::new(null_mut());
 }
 ```
 
@@ -101,7 +119,7 @@ Consequences to remember:
 
 ## Error model
 
-A single Python exception type, created in [`src/python/mod.rs:104`](../../src/python/mod.rs):
+A single Python exception type, created in [`pliron-python/src/lib.rs`](../src/lib.rs):
 
 ```rust
 pyo3::create_exception!(pliron, PlironError, PyException, "Base exception for all pliron compiler errors.");
@@ -116,13 +134,13 @@ module by `register_core_types` (`m.add("PlironError", …)`), so Python code ca
 
 Core classes are registered explicitly; dialect classes register themselves.
 
-**Core** — [`register_core_types`](../../src/python/mod.rs) hand-lists the fixed
+**Core** — [`register_core_types`](../src/lib.rs) hand-lists the fixed
 wrappers: `PyContext`, `PyOperation`, `PyBasicBlock`, `PyRegion`, `PyValue`,
 `PyType`, `PyAttribute`, plus the `pliron.irbuild` submodule (inserter, rewriter,
 insertion points, listeners, cloning) and the `PlironError` type.
 
 **Dialect** — every generated class appends an entry to a global
-`distributed_slice` ([`src/python/mod.rs:152`](../../src/python/mod.rs)):
+`distributed_slice` ([`pliron-python/src/lib.rs`](../src/lib.rs)):
 
 ```rust
 pub struct PyClassRegistration {
@@ -130,8 +148,10 @@ pub struct PyClassRegistration {
     pub register: fn(&Bound<'_, PyModule>) -> PyResult<()>,
 }
 
-#[::pliron::linkme::distributed_slice]
-pub static PY_CLASS_REGISTRATIONS: [PyClassRegistration] = [..];
+pub mod statics {
+    #[linkme::distributed_slice]
+    pub static PY_CLASS_REGISTRATIONS: [PyClassRegistration] = [..];
+}
 ```
 
 `register_all_classes` walks the slice and calls each `register` fn against the
@@ -139,20 +159,23 @@ class's dialect submodule (`pliron.builtin`, `pliron.llvm`, …), created on
 demand from the `"dialect."` prefix of `name` — see
 [07-module-layout.md](07-module-layout.md). Because `linkme` collects slice
 entries across *all linked crates*, merely linking a dialect crate into the
-assembly cdylib makes its classes appear in their module — no central list to
+cdylib makes its classes appear in their module — no central list to
 edit. The public `py_class_registration!` macro exposes the
-same hook for fully hand-written classes; the derive macros inline the equivalent
-`const _: () = { … }` block. (On `wasm`, where `linkme` is unavailable, the same
-role is played by `inventory`.)
+same hook for fully hand-written classes; the generated code inlines the
+equivalent `const _: () = { … }` block (referencing
+`::pliron_python::statics::PY_CLASS_REGISTRATIONS`). (On `wasm`, where `linkme`
+is unavailable, the same role is played by `inventory`.)
 
 This deliberately mirrors pliron's existing `context_registration!` mechanism for
 registering dialects, types, and ops into a `Context`.
 
 ## End-to-end: what happens at `import pliron`
 
-1. CPython loads the `pliron` cdylib and calls the `#[pymodule]` init.
+1. CPython loads the `pliron._pliron` cdylib and calls the `#[pymodule]` init.
 2. `register_core_types` adds the fixed wrappers and `PlironError`.
 3. `register_all_classes` walks `PY_CLASS_REGISTRATIONS` (populated at link time
-   by every derived type/attr/op in every linked dialect) and adds each class.
+   by every generated wrapper — the builtin dialect from
+   `pliron-python/src/dialects/builtin.rs`, plus any linked dialect crate) and
+   adds each class.
 4. The Python `pliron/__init__.py` shim re-exports `pliron._pliron.*` so users
    write `import pliron; pliron.builtin.IntegerType.get(32)`.

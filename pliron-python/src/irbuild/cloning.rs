@@ -1,17 +1,17 @@
-//! Python bindings for [`crate::irbuild::cloning`] — cloning IR entities with a
+//! Python bindings for [`::pliron::irbuild::cloning`] — cloning IR entities with a
 //! value / block / op remapping. Exposed as functions on the `pliron.irbuild`
-//! submodule, plus the [`IrMapping`](crate::irbuild::cloning::IrMapping) helper.
+//! submodule, plus the [`IrMapping`] helper.
 //!
 //! The core cloning functions insert new IR through a
-//! [`Rewriter`](crate::irbuild::rewriter::Rewriter) (to notify any listener it
+//! [`Rewriter`](::pliron::irbuild::rewriter::Rewriter) (to notify any listener it
 //! carries). Each wrapper builds a throw-away `IRRewriter<PyRewriteListener>`
 //! internally, attaching the caller's optional `listener` object to it.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use pyo3::prelude::*;
 
-use crate::{
+use ::pliron::{
     basic_block::BasicBlock,
     context::Ptr,
     irbuild::{
@@ -21,9 +21,7 @@ use crate::{
 };
 
 use super::listener::PyRewriteListener;
-use crate::python::{
-    basic_block::PyBasicBlock, operation::PyOperation, region::PyRegion, value::PyValue,
-};
+use crate::{basic_block::PyBasicBlock, operation::PyOperation, region::PyRegion, value::PyValue};
 
 /// A mapping from original IR entities to their clones, threaded through the
 /// `clone_*` functions.
@@ -76,7 +74,9 @@ impl PyIrMapping {
 
     /// The clone recorded for `from`, or `None`.
     fn lookup_op(&self, from: &PyOperation) -> Option<PyOperation> {
-        self.inner.lookup_op(from.ptr).map(|ptr| PyOperation { ptr })
+        self.inner
+            .lookup_op(from.ptr)
+            .map(|ptr| PyOperation { ptr })
     }
 
     /// The clone recorded for `from`, or `from` itself if none was recorded.
@@ -94,7 +94,7 @@ impl PyIrMapping {
     }
 }
 
-/// Set up the throw-away [`Rewriter`](crate::irbuild::rewriter::Rewriter) (with
+/// Set up the throw-away [`Rewriter`](::pliron::irbuild::rewriter::Rewriter) (with
 /// the caller's `listener` attached, if any) and the `&mut IrMapping` (the
 /// caller's if provided, else a fresh one), then run `f`. Lets each wrapper call
 /// its native `cloning::*` function exactly once.
@@ -131,7 +131,7 @@ pub fn clone_operation(
     mapping: Option<PyRefMut<'_, PyIrMapping>>,
     listener: Option<Py<PyAny>>,
 ) -> PyResult<PyOperation> {
-    let ctx = crate::python::get_ctx_mut()?;
+    let ctx = crate::get_ctx_mut()?;
     let new_op = with_clone_env(mapping, listener, |rewriter, mapper| {
         cloning::clone_operation(op.ptr, ctx, rewriter, mapper)
     });
@@ -149,7 +149,7 @@ pub fn clone_region_into(
     mapping: Option<PyRefMut<'_, PyIrMapping>>,
     listener: Option<Py<PyAny>>,
 ) -> PyResult<()> {
-    let ctx = crate::python::get_ctx_mut()?;
+    let ctx = crate::get_ctx_mut()?;
     with_clone_env(mapping, listener, |rewriter, mapper| {
         cloning::clone_region_into(src.ptr, dest.ptr, ctx, rewriter, mapper)
     });
@@ -171,7 +171,7 @@ pub fn clone_blocks_into(
     listener: Option<Py<PyAny>>,
 ) -> PyResult<()> {
     let block_ptrs: Vec<Ptr<BasicBlock>> = blocks.iter().map(|b| b.ptr).collect();
-    let ctx = crate::python::get_ctx_mut()?;
+    let ctx = crate::get_ctx_mut()?;
     with_clone_env(mapping, listener, |rewriter, mapper| {
         cloning::clone_blocks_into(&block_ptrs, dest.ptr, ctx, rewriter, mapper)
     });

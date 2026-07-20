@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use pliron::derive::{pliron_type, type_interface_impl, pliron_type_impl};
+use pliron::derive::{pliron_type, pliron_type_impl, type_interface_impl};
 
 use crate::{
     builtin::type_interfaces::{FloatTypeInterface, FunctionTypeInterface},
@@ -26,8 +26,8 @@ pub enum Signedness {
 #[pliron_type(name = "builtin.integer", generate_get = true, verifier = "succ")]
 #[derive(Hash, PartialEq, Eq, Debug, Clone)]
 pub struct IntegerType {
-    width: u32,
-    signedness: Signedness,
+    pub width: u32,
+    pub signedness: Signedness,
 }
 
 #[pliron_type_impl]
@@ -115,7 +115,7 @@ impl Printable for IntegerType {
 ///
 #[pliron_type(name = "builtin.function", format = "`<` $0 `>`", verifier = "succ")]
 #[derive(Hash, PartialEq, Eq, Debug)]
-pub struct FunctionType(TypeSig);
+pub struct FunctionType(pub TypeSig);
 
 impl FunctionType {
     /// Get a Function type.
@@ -183,71 +183,6 @@ impl FloatTypeInterface for FP16Type {
         apfloat::Half::get_semantics()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Python constructors for auto-generated pyclass wrappers
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "python")]
-use alloc::format;
-
-#[cfg(feature = "python")]
-#[pyo3::pymethods]
-impl PyIntegerType {
-    /// Create or get a uniqued IntegerType.
-    ///
-    /// `signedness` must be one of `"signed"`, `"unsigned"`, or `"signless"` (default).
-    #[staticmethod]
-    #[pyo3(signature = (width, signedness=None))]
-    fn get(width: u32, signedness: Option<&str>) -> pyo3::PyResult<PyIntegerType> {
-        let ctx = crate::python::get_ctx_mut()?;
-        let sign = match signedness.unwrap_or("signless") {
-            "signed" => Signedness::Signed,
-            "unsigned" => Signedness::Unsigned,
-            "signless" => Signedness::Signless,
-            other => {
-                return Err(crate::python::PlironError::new_err(format!(
-                    "Invalid signedness '{}', expected signed/unsigned/signless",
-                    other
-                )))
-            }
-        };
-        let ptr = IntegerType::get(ctx, width, sign);
-        Ok(PyIntegerType { ptr })
-    }
-}
-
-#[cfg(feature = "python")]
-#[pyo3::pymethods]
-impl PyFunctionType {
-    /// Create or get a uniqued FunctionType.
-    ///
-    /// `inputs` and `results` are lists of `Type` handles.
-    #[staticmethod]
-    fn get(
-        inputs: Vec<pyo3::Bound<'_, pyo3::PyAny>>,
-        results: Vec<pyo3::Bound<'_, pyo3::PyAny>>,
-    ) -> pyo3::PyResult<PyFunctionType> {
-        let in_ptrs = crate::python::types::type_handles_from_any(&inputs)?;
-        let res_ptrs = crate::python::types::type_handles_from_any(&results)?;
-        let ctx = crate::python::get_ctx_mut()?;
-        let ptr = FunctionType::get(ctx, in_ptrs, res_ptrs);
-        Ok(PyFunctionType { ptr })
-    }
-}
-
-#[cfg(feature = "python")]
-#[pyo3::pymethods]
-impl PyUnitType {
-    /// Get the singleton UnitType.
-    #[staticmethod]
-    fn get() -> pyo3::PyResult<PyUnitType> {
-        let ctx = crate::python::get_ctx()?;
-        let ptr = UnitType::get(ctx);
-        Ok(PyUnitType { ptr })
-    }
-}
-
 
 #[cfg(test)]
 mod tests {

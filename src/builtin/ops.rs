@@ -460,14 +460,7 @@ pub struct ReturnOp;
 impl ReturnOp {
     /// Create a new [`ReturnOp`].
     pub fn new(ctx: &mut Context) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            vec![],
-            vec![],
-            0,
-        );
+        let op = Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 0);
         ReturnOp { op }
     }
 }

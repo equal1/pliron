@@ -2,9 +2,9 @@
 
 use pyo3::{ffi::Py_hash_t, prelude::*};
 
-use alloc::{format, string::String};
+use std::{format, string::String};
 
-use crate::{
+use ::pliron::{
     attribute::{AttrId, AttrName, AttrObj},
     dialect::DialectName,
     printable::Printable,
@@ -21,10 +21,7 @@ impl PyAttrId {
         let dialect = DialectName::new(dialect);
         let name = AttrName::new(name);
 
-        self.inner = AttrId {
-            dialect: dialect,
-            name: name,
-        };
+        self.inner = AttrId { dialect, name };
         Ok(())
     }
 
@@ -59,7 +56,7 @@ impl PyAttribute {
     /// Clone this attribute, returning a new independent copy.
     fn clone_attr(&self) -> PyAttribute {
         PyAttribute {
-            inner: dyn_clone::clone_box(&*self.inner),
+            inner: ::pliron::dyn_clone::clone_box(&*self.inner),
         }
     }
 
@@ -84,7 +81,7 @@ impl PyAttribute {
 
     fn verify(&self) -> PyResult<()> {
         let ctx = super::get_ctx()?;
-        crate::attribute::verify_attr(&*self.inner, ctx).map_err(super::to_py_err)
+        ::pliron::attribute::verify_attr(&*self.inner, ctx).map_err(super::to_py_err)
     }
 
     fn __eq__(&self, other: &PyAttribute) -> PyResult<bool> {

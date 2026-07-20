@@ -1,10 +1,9 @@
-//! Classify a Rust type for the `pliron_attr_impl` / `pliron_type_impl` /
-//! `pliron_op_impl` Python-wrapper macros.
+//! Classify a Rust type for the `py_attr_impl` / `py_type_impl` /
+//! `py_op_impl` Python-wrapper macros.
 //!
 //! Everything beyond a small set of syntactic specials is handled via the
-//! [`PyMap`](../../pliron/python/trait.PyMap.html) trait at the call site of the
-//! generated code — this module deliberately knows almost nothing about
-//! domain types.
+//! `pliron_python::PyMap` trait at the call site of the generated code — this
+//! module deliberately knows almost nothing about domain types.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -40,7 +39,9 @@ pub(crate) fn classify(ty: &Type) -> Option<ParamKind> {
 /// `&Context` or `&mut Context`.
 fn is_context_ref(ty: &Type) -> bool {
     let Type::Reference(r) = ty else { return false };
-    let Type::Path(tp) = &*r.elem else { return false };
+    let Type::Path(tp) = &*r.elem else {
+        return false;
+    };
     tp.path
         .segments
         .last()
@@ -53,10 +54,10 @@ fn is_trivial(ty: &Type) -> bool {
     match ty {
         Type::Reference(r) => {
             // `&str` only.
-            if let Type::Path(tp) = &*r.elem {
-                if let Some(last) = tp.path.segments.last() {
-                    return last.ident == "str";
-                }
+            if let Type::Path(tp) = &*r.elem
+                && let Some(last) = tp.path.segments.last()
+            {
+                return last.ident == "str";
             }
             false
         }
@@ -66,8 +67,8 @@ fn is_trivial(ty: &Type) -> bool {
             };
             let ident = last.ident.to_string();
             match ident.as_str() {
-                "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16"
-                | "i32" | "i64" | "i128" | "isize" | "f32" | "f64" | "String" => true,
+                "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32"
+                | "i64" | "i128" | "isize" | "f32" | "f64" | "String" => true,
                 "Vec" | "Option" => single_generic_arg(&last.arguments)
                     .map(is_trivial)
                     .unwrap_or(false),
@@ -156,7 +157,7 @@ pub(crate) fn return_mentions_self(ty: &Type) -> bool {
     }
 }
 
-/// The path `::pliron::python::PyMap` written out for `quote!` reuse.
+/// The path `::pliron_python::PyMap` written out for `quote!` reuse.
 pub(crate) fn pymap_path() -> TokenStream {
-    quote!(::pliron::python::PyMap)
+    quote!(::pliron_python::PyMap)
 }

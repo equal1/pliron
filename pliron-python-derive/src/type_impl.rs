@@ -1,3 +1,5 @@
+//! `#[pymethods]` generation mirroring a type's `impl` block.
+
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{FnArg, ImplItem, ItemImpl, Pat, ReturnType, Signature, Type, Visibility, parse2};
@@ -6,12 +8,21 @@ use crate::py_type_mapper::{
     ParamKind, classify, pymap_path, return_mentions_self, substitute_self,
 };
 
-/// Entry point for `#[pliron_attr_impl]`.
+/// Generate a `#[pyo3::pymethods] impl Py<Name> { ... }` block containing Python
+/// wrappers for every `pub` function of the given `impl` block.
 ///
-/// Emits the original `impl` block unchanged, then generates a
-/// `#[cfg(feature = "python")] #[pyo3::pymethods] impl Py<Name> { ... }` block
-/// containing Python wrappers for every `pub` function in the block.
-pub(crate) fn pliron_attr_impl(item: impl Into<TokenStream>) -> syn::Result<TokenStream> {
+/// `emit_original` controls whether the original `impl` block is re-emitted in
+/// front of the generated code: true for the attribute form (`#[py_type_impl]` on
+/// a local item), false for the reflect-export form (the `impl` lives in a
+/// foreign crate and must not be duplicated).
+///
+/// **Key difference from `gen_attr_impl`**: types are stored as `Ptr<TypeObj>`,
+/// so instance methods always require `&Context` to deref. The wrapper therefore
+/// always injects ctx and returns `PyResult<T>` for instance methods.
+pub(crate) fn gen_type_impl(
+    item: impl Into<TokenStream>,
+    emit_original: bool,
+) -> syn::Result<TokenStream> {
     let item: ItemImpl = parse2(item.into())?;
 
     let rust_ty = extract_self_type(&item.self_ty)?;
@@ -35,30 +46,35 @@ pub(crate) fn pliron_attr_impl(item: impl Into<TokenStream>) -> syn::Result<Toke
         quote! {}
     } else {
         quote! {
-            #[cfg(feature = "python")]
-            #[::pliron::pyo3::pymethods(crate = "::pliron::pyo3")]
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
             impl #py_ty_name {
                 #(#py_methods)*
             }
         }
     };
 
+    let original = if emit_original {
+        quote! { #item }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
-        #item
+        #original
         #(#method_errors)*
         #py_block
     })
 }
 
 fn extract_self_type(ty: &Type) -> syn::Result<syn::Ident> {
-    if let Type::Path(tp) = ty {
-        if let Some(last) = tp.path.segments.last() {
-            return Ok(last.ident.clone());
-        }
+    if let Type::Path(tp) = ty
+        && let Some(last) = tp.path.segments.last()
+    {
+        return Ok(last.ident.clone());
     }
     Err(syn::Error::new_spanned(
         ty,
-        "#[pliron_attr_impl] requires a concrete type path (e.g. `impl MyAttr`)",
+        "py_type_impl requires a concrete type path (e.g. `impl MyType`)",
     ))
 }
 
@@ -72,19 +88,9 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
     let method_name = &sig.ident;
     let self_kind = classify_self(sig);
 
-    // The wrapper holds the concrete `#rust_ty` by value, so we borrow it
-    // directly — no downcast.
-    let downcast_stmt = match &self_kind {
-        SelfKind::Ref => quote! {
-            let __inner = &self.inner;
-        },
-        SelfKind::RefMut => quote! {
-            let __inner = &mut self.inner;
-        },
-        SelfKind::Static => quote! {},
-    };
+    // Instance methods on types ALWAYS need ctx for `ptr.deref(ctx)`.
+    let mut needs_ctx = !matches!(self_kind, SelfKind::Static);
 
-    let mut needs_ctx = false;
     let mut py_params: Vec<TokenStream> = Vec::new();
     let mut call_args: Vec<TokenStream> = Vec::new();
     let pymap = pymap_path();
@@ -120,19 +126,28 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
             None => {
                 return Err(syn::Error::new_spanned(
                     &pat_ty.ty,
-                    "#[pliron_attr_impl]: unsupported parameter shape",
+                    "py_type_impl: unsupported parameter shape",
                 ));
             }
         }
     }
 
     let ctx_inject = if needs_ctx {
-        quote! { let ctx = ::pliron::python::get_ctx()?; }
+        quote! { let ctx = ::pliron_python::get_ctx()?; }
     } else {
         quote! {}
     };
 
-    let ret_info = map_return_type(&sig.output, rust_ty)?;
+    // The wrapper holds a `TypedHandle<#rust_ty>`, so `deref(ctx)` yields a
+    // `Ref<#rust_ty>` directly — no downcast needed.
+    let downcast_stmt = match &self_kind {
+        SelfKind::Ref | SelfKind::RefMut => quote! {
+            let __inner = self.ptr.deref(ctx);
+        },
+        SelfKind::Static => quote! {},
+    };
+
+    let ret_info = map_return_type(&sig.output, rust_ty, needs_ctx)?;
     let py_ret_ty = &ret_info.py_ret_ty;
     let wrap_result = &ret_info.wrap_result;
 
@@ -153,8 +168,8 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
     };
 
     let body = quote! {
-        #downcast_stmt
         #ctx_inject
+        #downcast_stmt
         let __result = #call_expr;
         #wrap_result
     };
@@ -186,7 +201,7 @@ fn extract_pat_ident(pat: &Pat) -> syn::Result<&syn::Ident> {
     }
     Err(syn::Error::new_spanned(
         pat,
-        "#[pliron_attr_impl]: only simple identifier patterns are supported in function parameters",
+        "py_type_impl: only simple identifier patterns are supported in function parameters",
     ))
 }
 
@@ -195,34 +210,45 @@ struct ReturnInfo {
     wrap_result: TokenStream,
 }
 
-fn map_return_type(ret: &ReturnType, rust_ty: &syn::Ident) -> syn::Result<ReturnInfo> {
+/// Wrap the return in `PyResult<>` when ctx is being injected (i.e. the body uses `?`),
+/// so that `let ctx = get_ctx()?;` can early-return.
+fn map_return_type(
+    ret: &ReturnType,
+    rust_ty: &syn::Ident,
+    always_pyresult: bool,
+) -> syn::Result<ReturnInfo> {
     let inner_ty: Option<&Type> = match ret {
         ReturnType::Default => None,
         ReturnType::Type(_, ty) => Some(ty),
     };
 
     let Some(ty) = inner_ty else {
-        return Ok(ReturnInfo {
-            py_ret_ty: quote!(()),
-            wrap_result: quote! {},
+        return Ok(if always_pyresult {
+            ReturnInfo {
+                py_ret_ty: quote!(::pliron_python::pyo3::PyResult<()>),
+                wrap_result: quote! { Ok(()) },
+            }
+        } else {
+            ReturnInfo {
+                py_ret_ty: quote!(()),
+                wrap_result: quote! {},
+            }
         });
     };
 
-    // Result<T, E> → PyResult<<T as PyMap>::Owned> with map_err.
     if let Some(ok_ty) = extract_result_ok(ty) {
         let ok_ty = substitute_self(ok_ty, rust_ty);
         let inner = map_inner_return(&ok_ty)?;
         let py_inner = &inner.py_ty;
         let converter = &inner.converter;
         return Ok(ReturnInfo {
-            py_ret_ty: quote!(::pliron::pyo3::PyResult<#py_inner>),
+            py_ret_ty: quote!(::pliron_python::pyo3::PyResult<#py_inner>),
             wrap_result: quote! {
-                __result.map(|__val| { #converter }).map_err(::pliron::python::to_py_err)
+                __result.map(|__val| { #converter }).map_err(::pliron_python::to_py_err)
             },
         });
     }
 
-    // Self / Result<Self> retain Self until substitution above.
     let ty = if return_mentions_self(ty) {
         substitute_self(ty, rust_ty)
     } else {
@@ -231,10 +257,18 @@ fn map_return_type(ret: &ReturnType, rust_ty: &syn::Ident) -> syn::Result<Return
     let inner = map_inner_return(&ty)?;
     let py_ty_out = &inner.py_ty;
     let converter = &inner.converter;
-    Ok(ReturnInfo {
-        py_ret_ty: quote!(#py_ty_out),
-        wrap_result: quote! { let __val = __result; #converter },
-    })
+
+    if always_pyresult {
+        Ok(ReturnInfo {
+            py_ret_ty: quote!(::pliron_python::pyo3::PyResult<#py_ty_out>),
+            wrap_result: quote! { let __val = __result; Ok(#converter) },
+        })
+    } else {
+        Ok(ReturnInfo {
+            py_ret_ty: quote!(#py_ty_out),
+            wrap_result: quote! { let __val = __result; #converter },
+        })
+    }
 }
 
 struct InnerReturn {
@@ -247,22 +281,20 @@ fn map_inner_return(ty: &Type) -> syn::Result<InnerReturn> {
     match classify(ty) {
         Some(ParamKind::ContextParam) => Err(syn::Error::new_spanned(
             ty,
-            "#[pliron_attr_impl]: `&Context` cannot be a return type",
+            "py_type_impl: `&Context` cannot be a return type",
         )),
         Some(ParamKind::Trivial) => Ok(InnerReturn {
             py_ty: quote!(#ty),
             converter: quote! { __val },
         }),
         Some(ParamKind::PyMapped) => {
-            // `()` is classified as PyMapped above (it isn't recognized as primitive),
-            // so handle the unit case explicitly here.
-            if let Type::Tuple(tt) = ty {
-                if tt.elems.is_empty() {
-                    return Ok(InnerReturn {
-                        py_ty: quote!(()),
-                        converter: quote! {},
-                    });
-                }
+            if let Type::Tuple(tt) = ty
+                && tt.elems.is_empty()
+            {
+                return Ok(InnerReturn {
+                    py_ty: quote!(()),
+                    converter: quote! {},
+                });
             }
             Ok(InnerReturn {
                 py_ty: quote!(<#ty as #pymap>::Owned),
@@ -271,7 +303,7 @@ fn map_inner_return(ty: &Type) -> syn::Result<InnerReturn> {
         }
         None => Err(syn::Error::new_spanned(
             ty,
-            "#[pliron_attr_impl]: unsupported return shape",
+            "py_type_impl: unsupported return shape",
         )),
     }
 }
@@ -282,10 +314,10 @@ fn extract_result_ok(ty: &Type) -> Option<&Type> {
         if last.ident != "Result" {
             return None;
         }
-        if let syn::PathArguments::AngleBracketed(ab) = &last.arguments {
-            if let Some(syn::GenericArgument::Type(ok_ty)) = ab.args.first() {
-                return Some(ok_ty);
-            }
+        if let syn::PathArguments::AngleBracketed(ab) = &last.arguments
+            && let Some(syn::GenericArgument::Type(ok_ty)) = ab.args.first()
+        {
+            return Some(ok_ty);
         }
     }
     None
@@ -295,52 +327,58 @@ fn extract_result_ok(ty: &Type) -> Option<&Type> {
 mod tests {
     use super::*;
     use expect_test::expect;
+    use quote::quote;
 
     #[test]
-    fn static_and_instance_methods() {
+    fn instance_and_static_methods() {
         let item = quote! {
-            impl StringAttr {
-                pub fn new(value: String) -> Self {
-                    StringAttr(value)
+            impl IntegerType {
+                pub fn width(&self) -> u32 {
+                    self.width
                 }
-                pub fn value(&self) -> String {
-                    self.0.clone()
+                pub fn get(ctx: &mut Context, width: u32) -> TypedHandle<Self> {
+                    IntegerType::get_impl(ctx, width)
                 }
-                fn private_ignored(&self) -> String {
-                    "ignored".to_string()
+                fn private_ignored(&self) -> u32 {
+                    0
                 }
             }
         };
-        let ts = pliron_attr_impl(item).unwrap();
+        let ts = gen_type_impl(item, true).unwrap();
         let f = syn::parse2::<syn::File>(ts).unwrap();
         let got = prettyplease::unparse(&f);
 
         expect![[r#"
-            impl StringAttr {
-                pub fn new(value: String) -> Self {
-                    StringAttr(value)
+            impl IntegerType {
+                pub fn width(&self) -> u32 {
+                    self.width
                 }
-                pub fn value(&self) -> String {
-                    self.0.clone()
+                pub fn get(ctx: &mut Context, width: u32) -> TypedHandle<Self> {
+                    IntegerType::get_impl(ctx, width)
                 }
-                fn private_ignored(&self) -> String {
-                    "ignored".to_string()
+                fn private_ignored(&self) -> u32 {
+                    0
                 }
             }
-            #[cfg(feature = "python")]
-            #[::pliron::pyo3::pymethods(crate = "::pliron::pyo3")]
-            impl PyStringAttr {
-                #[staticmethod]
-                fn new(value: String) -> <StringAttr as ::pliron::python::PyMap>::Owned {
-                    let __result = StringAttr::new(value);
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyIntegerType {
+                fn width(&self) -> ::pliron_python::pyo3::PyResult<u32> {
+                    let ctx = ::pliron_python::get_ctx()?;
+                    let __inner = self.ptr.deref(ctx);
+                    let __result = __inner.width();
                     let __val = __result;
-                    <StringAttr as ::pliron::python::PyMap>::into_py(__val)
+                    Ok(__val)
                 }
-                fn value(&self) -> String {
-                    let __inner = &self.inner;
-                    let __result = __inner.value();
+                #[staticmethod]
+                fn get(
+                    width: u32,
+                ) -> ::pliron_python::pyo3::PyResult<
+                    <TypedHandle<IntegerType> as ::pliron_python::PyMap>::Owned,
+                > {
+                    let ctx = ::pliron_python::get_ctx()?;
+                    let __result = IntegerType::get(ctx, width);
                     let __val = __result;
-                    __val
+                    Ok(<TypedHandle<IntegerType> as ::pliron_python::PyMap>::into_py(__val))
                 }
             }
         "#]]

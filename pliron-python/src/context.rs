@@ -2,10 +2,10 @@
 
 use pyo3::prelude::*;
 
-use alloc::boxed::Box;
+use std::boxed::Box;
 
 use super::{clear_active_ctx, set_active_ctx};
-use crate::context::Context;
+use ::pliron::context::Context;
 
 /// A pliron compiler context.
 ///
@@ -23,6 +23,12 @@ use crate::context::Context;
 pub struct PyContext {
     /// Boxed context so we have a stable address for the thread-local pointer.
     ctx: Option<Box<Context>>,
+}
+
+impl Default for PyContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[pymethods]

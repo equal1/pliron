@@ -1,18 +1,26 @@
-//! [`PyBasicBlock`] — Python wrapper for [`crate::basic_block::BasicBlock`].
+//! [`PyBasicBlock`] — Python wrapper for [`::pliron::basic_block::BasicBlock`].
 
 use pyo3::prelude::*;
 
-use alloc::{
+use std::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
 
-use crate::{
-    basic_block::{BasicBlock}, common_traits::Verify, context::Ptr, identifier::Identifier, linked_list::{ContainsLinkedList, LinkedList}, operation::Operation, printable::Printable, python::types::type_handle_from_any,
+use ::pliron::{
+    basic_block::BasicBlock,
+    common_traits::Verify,
+    context::Ptr,
+    identifier::Identifier,
+    linked_list::{ContainsLinkedList, LinkedList},
+    operation::Operation,
+    printable::Printable,
 };
 
-use super::{operation::PyOperation, region::PyRegion, value::PyValue};
+use super::{
+    operation::PyOperation, region::PyRegion, types::type_handle_from_any, value::PyValue,
+};
 
 /// A handle to a pliron basic block.
 #[pyclass(unsendable, name = "BasicBlock")]
@@ -48,7 +56,10 @@ impl PyBasicBlock {
     #[getter]
     fn label(&self) -> PyResult<Option<String>> {
         let ctx = super::get_ctx()?;
-        Ok(self.ptr.deref(ctx).label.as_ref().map(|id| id.to_string()))
+        Ok(
+            ::pliron::common_traits::Named::given_name(&*self.ptr.deref(ctx), ctx)
+                .map(|id| id.to_string()),
+        )
     }
 
     /// Setter for the `label` property (`block.label = "name"`).
@@ -62,7 +73,6 @@ impl PyBasicBlock {
         self.ptr.deref_mut(ctx).set_label(ctx, label);
         Ok(())
     }
-
 
     // ------------------------------------------------------------------
     // Block arguments
@@ -227,7 +237,7 @@ impl PyBasicBlock {
     ///
     /// Walks the intrusive op list on demand — no upfront allocation. It is safe
     /// to erase the just-yielded op inside the loop; mutating *ahead* of the
-    /// cursor can dangle it (use [`get_ops()`](Self::get_ops) for a stable
+    /// cursor can dangle it (use [`ops()`](Self::ops) for a stable
     /// snapshot). Each call returns a fresh iterator.
     fn ops(&self) -> PyResult<PyBlockOpsIter> {
         let ctx = super::get_ctx()?;
@@ -235,7 +245,6 @@ impl PyBasicBlock {
             next: self.ptr.deref(ctx).get_head(),
         })
     }
-
 
     // ------------------------------------------------------------------
     // LinkedList

@@ -15,14 +15,16 @@ from pliron.llvm import ...                            # downstream dialect, sam
 
 **The rule:**
 
-- Classes from files directly under `src/python/` (`operation.rs`,
+- Classes from files directly under `pliron-python/src/` (`operation.rs`,
   `basic_block.rs`, `value.rs`, …) live **flat on `pliron`**.
-- Each **folder** under `src/python/` (a Rust module directory) is one Python
-  submodule, populated flat by its files. Its `mod.rs` builds it via a
-  `pub fn register(parent)` (see `src/python/irbuild/mod.rs`). Nested folders
-  nest submodules.
+- Each **folder** under `pliron-python/src/` (a Rust module directory) is one
+  Python submodule, populated flat by its files. Its `mod.rs` builds it via a
+  `pub fn register(parent)` (see `src/irbuild/mod.rs`). Nested folders
+  nest submodules. (`src/dialects/` is an exception — it holds the reflect-export
+  invocations for the builtin dialect, whose classes are prefix-routed like any
+  dialect's, below.)
 - Each **dialect** is one submodule (`pliron.builtin`, `pliron.llvm`), holding
-  every derive-generated class of that dialect.
+  every generated class of that dialect.
 
 `PlironError` stays on the root.
 
@@ -31,8 +33,8 @@ from pliron.llvm import ...                            # downstream dialect, sam
 There is no static "dialect declaration" item in Rust — a `Dialect` is a runtime
 entity (`Dialect::register(ctx, …)`). The dialect name exists statically in
 exactly one place: the `"dialect.name"` string in every
-`#[pliron_op/attr/type(name = …)]`, which the derives bake into each
-registration:
+`#[pliron_op/attr/type(name = …)]`, which travels through the reflect envelope
+and is baked into each generated registration:
 
 ```rust
 PyClassRegistration { name: "builtin.integer", register: … }
@@ -40,15 +42,15 @@ PyClassRegistration { name: "builtin.integer", register: … }
 
 `register_all_classes` splits that prefix and routes the class into a
 get-or-created `pliron.<dialect>` submodule
-([`src/python/mod.rs`](../../src/python/mod.rs), `get_or_create_submodule`).
+([`pliron-python/src/lib.rs`](../src/lib.rs), `get_or_create_submodule`).
 Consequences:
 
 - **No convention needed from dialect authors.** The `name = "mydialect.foo"`
-  they already write *is* the module placement. Linking the crate is enough
-  (linkme collects registrations across crates).
+  they already write *is* the module placement. Linking the crate that holds the
+  generated wrappers is enough (linkme collects registrations across crates).
 - Get-or-create makes linkme's arbitrary iteration order irrelevant.
 - A registration without a `.` prefix registers at the top level (escape hatch).
-- Downstream dialects **cannot** be folders under pliron's `src/python/` (their
+- Downstream dialects **cannot** be folders under `pliron-python/src/` (their
   code lives in their own crate), which is why dialects are prefix-routed rather
   than folder-mapped. A dialect crate can still hand-write extras onto its
   module via `py_class_registration!` with its dialect prefix.
@@ -96,11 +98,12 @@ can ship `.pyi` stubs and pure-Python helpers. Rust sees its own `__name__` as
 
 ## Downstream dialects
 
-- **Linked into the pliron wheel** (e.g. `pliron-llvm` as a dependency of
-  `pliron-python`): nothing to do — prefix routing lands its classes in
+- **Linked into the pliron wheel** (e.g. an LLVM bindings crate as a dependency
+  of `pliron-python`): nothing to do — prefix routing lands its classes in
   `pliron.llvm`.
-- **Own wheel** (`mylang` extension embedding pliron): their assembly crate
-  calls the same `register_core_types(m)` / `register_all_classes(m)` on their
+- **Own wheel** (`mylang` extension embedding pliron): their extension crate
+  depends on `pliron-python` as an `rlib` and calls the same
+  `pliron_python::register_core_types(m)` / `register_all_classes(m)` on their
   own `#[pymodule]`, and they copy the generic shim. Everything (core, builtin,
   their dialects) appears under `mylang.*`. Best-effort by design: two separate
   cdylibs each embedding pliron would have disjoint arenas/registries, so core
@@ -111,5 +114,6 @@ can ship `.pyi` stubs and pure-Python helpers. Rust sees its own `__name__` as
 - **Stubs**: `__init__.pyi` predates this layout; it should become a stub
   package (`irbuild.pyi`, `builtin.pyi`, …).
 - **`__module__` on classes** is not set (`#[pyclass(module = "…")]`), so
-  `repr(type(x))` shows `builtins.…`. The derives know the dialect at codegen
-  time and could emit `module = "pliron.builtin"` etc.; cosmetic, deferred.
+  `repr(type(x))` shows `builtins.…`. `pliron-python-derive` knows the dialect
+  at codegen time and could emit `module = "pliron.builtin"` etc.; cosmetic,
+  deferred.

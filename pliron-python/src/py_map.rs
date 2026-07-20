@@ -25,16 +25,15 @@
 
 use pyo3::FromPyObject;
 
-use alloc::{
+use std::{
     borrow::ToOwned,
     format,
     string::{String, ToString},
     vec::Vec,
 };
 
-#[cfg(feature = "python")]
-use crate::builtin::types::Signedness;
-use crate::{
+use ::pliron::builtin::types::Signedness;
+use ::pliron::{
     attribute::{AttrObj, AttributeDict},
     basic_block::BasicBlock,
     context::Ptr,
@@ -107,7 +106,7 @@ impl PyMap for TypeHandle {
     }
 }
 
-impl PyMap for crate::r#type::TypeSig {
+impl PyMap for ::pliron::r#type::TypeSig {
     // A function signature surfaces as a `(list[Type], list[Type])` tuple of
     // (argument types, result types).
     type Owned = (Vec<PyType>, Vec<PyType>);
@@ -121,7 +120,7 @@ impl PyMap for crate::r#type::TypeSig {
     }
 
     fn from_py(py: Self::Borrowed<'_>) -> Self {
-        crate::r#type::TypeSig {
+        ::pliron::r#type::TypeSig {
             arguments: <Vec<TypeHandle> as PyMap>::from_py(py.0),
             results: <Vec<TypeHandle> as PyMap>::from_py(py.1),
         }
@@ -134,12 +133,12 @@ impl PyMap for AttrObj {
 
     fn into_py(self) -> PyAttribute {
         PyAttribute {
-            inner: dyn_clone::clone_box(&*self),
+            inner: ::pliron::dyn_clone::clone_box(&*self),
         }
     }
 
     fn from_py(py: pyo3::PyRef<'_, PyAttribute>) -> Self {
-        dyn_clone::clone_box(&*py.inner)
+        ::pliron::dyn_clone::clone_box(&*py.inner)
     }
 }
 
@@ -213,17 +212,17 @@ impl PyMap for Ptr<Region> {
 
 /// Shape contract for a derive-generated `Py<TypeName>` wrapper.
 ///
-/// The wrapper holds a [`TypedHandle<Concrete>`](crate::r#type::TypedHandle) and
+/// The wrapper holds a `TypedHandle<Concrete>` and
 /// behaves like one — every method projects through `deref(ctx)` to the concrete
 /// `Type`. `#[pliron_type]` emits this impl automatically; downstream code should
 /// not implement it by hand.
 pub trait PyTypeWrapper: pyo3::PyClass + Sized {
-    /// The concrete pliron [`Type`](crate::r#type::Type) this wrapper is the
+    /// The concrete pliron `Type` this wrapper is the
     /// Python face of.
-    type Concrete: crate::r#type::Type;
+    type Concrete: ::pliron::r#type::Type;
 
-    fn from_typed_handle(handle: crate::r#type::TypedHandle<Self::Concrete>) -> Self;
-    fn to_typed_handle(&self) -> crate::r#type::TypedHandle<Self::Concrete>;
+    fn from_typed_handle(handle: ::pliron::r#type::TypedHandle<Self::Concrete>) -> Self;
+    fn to_typed_handle(&self) -> ::pliron::r#type::TypedHandle<Self::Concrete>;
 }
 
 /// Declare the `#[pyclass]` Python wrapper for a `Type`. Implemented automatically
@@ -232,9 +231,9 @@ pub trait PyMapTarget {
     type PyClass: PyTypeWrapper<Concrete = Self>;
 }
 
-impl<T> PyMap for crate::r#type::TypedHandle<T>
+impl<T> PyMap for ::pliron::r#type::TypedHandle<T>
 where
-    T: crate::r#type::Type + PyMapTarget + 'static,
+    T: ::pliron::r#type::Type + PyMapTarget + 'static,
 {
     type Owned = T::PyClass;
     type Borrowed<'py> = pyo3::PyRef<'py, T::PyClass>;
@@ -275,11 +274,11 @@ impl PyMap for Single {
     type Borrowed<'py> = f64;
 
     fn into_py(self) -> f64 {
-        crate::utils::apfloat::single_to_f32(self) as f64
+        ::pliron::utils::apfloat::single_to_f32(self) as f64
     }
 
     fn from_py(py: f64) -> Self {
-        crate::utils::apfloat::f32_to_single(py as f32)
+        ::pliron::utils::apfloat::f32_to_single(py as f32)
     }
 }
 
@@ -288,11 +287,11 @@ impl PyMap for Double {
     type Borrowed<'py> = f64;
 
     fn into_py(self) -> f64 {
-        crate::utils::apfloat::double_to_f64(self)
+        ::pliron::utils::apfloat::double_to_f64(self)
     }
 
     fn from_py(py: f64) -> Self {
-        crate::utils::apfloat::f64_to_double(py)
+        ::pliron::utils::apfloat::f64_to_double(py)
     }
 }
 
@@ -301,11 +300,11 @@ impl PyMap for Half {
     type Borrowed<'py> = f64;
 
     fn into_py(self) -> f64 {
-        crate::utils::apfloat::half_to_f64(self)
+        ::pliron::utils::apfloat::half_to_f64(self)
     }
 
     fn from_py(py: f64) -> Self {
-        crate::utils::apfloat::f64_to_half(py)
+        ::pliron::utils::apfloat::f64_to_half(py)
     }
 }
 
@@ -325,7 +324,7 @@ impl PyMap for AttributeDict {
             .into_iter()
             .map(|(k, v)| {
                 let id = Identifier::try_new(k).expect("invalid Identifier key from Python");
-                let attr = dyn_clone::clone_box(&*v.inner);
+                let attr = ::pliron::dyn_clone::clone_box(&*v.inner);
                 (id, attr)
             })
             .collect();

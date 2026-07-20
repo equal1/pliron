@@ -1,27 +1,20 @@
-//! [`PyOperation`] — Python wrapper for [`crate::operation::Operation`].
+//! [`PyOperation`] — Python wrapper for [`::pliron::operation::Operation`].
 
 use pyo3::prelude::*;
 
-use alloc::{
+use std::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
 
-use crate::{
-    context::Ptr,
-    linked_list::LinkedList as _,
-    operation::Operation,
+use ::pliron::{
+    common_traits::Verify, context::Ptr, linked_list::LinkedList as _, operation::Operation,
     printable::Printable,
-    common_traits::Verify,
 };
 
 use super::{
-    attributes::PyAttribute,
-    basic_block::PyBasicBlock,
-    region::PyRegion,
-    to_py_err,
-    value::PyValue,
+    attributes::PyAttribute, basic_block::PyBasicBlock, region::PyRegion, to_py_err, value::PyValue,
 };
 
 /// A handle to a pliron IR operation.
@@ -112,12 +105,11 @@ impl PyOperation {
     /// All nested regions as a list of [`PyRegion`].
     fn regions(&self) -> PyResult<Vec<PyRegion>> {
         let ctx = super::get_ctx()?;
-        Ok(self
-            .ptr
-            .deref(ctx)
-            .regions
-            .iter()
-            .map(|r| PyRegion { ptr: *r })
+        let op = self.ptr.deref(ctx);
+        Ok((0..op.num_regions())
+            .map(|i| PyRegion {
+                ptr: op.get_region(i),
+            })
             .collect())
     }
 
@@ -142,15 +134,13 @@ impl PyOperation {
     /// Get the named attribute, or `None` if not present.
     fn get_attribute(&self, name: &str) -> PyResult<Option<PyAttribute>> {
         let ctx = super::get_ctx()?;
-        let id: crate::identifier::Identifier = name.try_into().map_err(|e: crate::result::Error| to_py_err(e))?;
+        let id: ::pliron::identifier::Identifier = name
+            .try_into()
+            .map_err(|e: ::pliron::result::Error| to_py_err(e))?;
         let op_ref = self.ptr.deref(ctx);
-        Ok(op_ref
-            .attributes
-            .0
-            .get(&id)
-            .map(|attr| PyAttribute {
-                inner: dyn_clone::clone_box(&**attr),
-            }))
+        Ok(op_ref.attributes.0.get(&id).map(|attr| PyAttribute {
+            inner: ::pliron::dyn_clone::clone_box(&**attr),
+        }))
     }
 
     /// Return all attribute names as a list of strings.
@@ -168,7 +158,9 @@ impl PyOperation {
 
     fn has_attribute(&self, name: &str) -> PyResult<bool> {
         let ctx = super::get_ctx()?;
-        let id: crate::identifier::Identifier = name.try_into().map_err(|e: crate::result::Error| to_py_err(e))?;
+        let id: ::pliron::identifier::Identifier = name
+            .try_into()
+            .map_err(|e: ::pliron::result::Error| to_py_err(e))?;
         Ok(self.ptr.deref(ctx).attributes.0.contains_key(&id))
     }
 
@@ -269,20 +261,17 @@ impl PyOperation {
     }
 
     /// Set a named attribute on this operation.
-    fn set_attribute(
-        &self,
-        name: &str,
-        attr: &pyo3::Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<()> {
+    fn set_attribute(&self, name: &str, attr: &pyo3::Bound<'_, pyo3::PyAny>) -> PyResult<()> {
         let ctx = super::get_ctx()?;
-        let id: crate::identifier::Identifier = name.try_into().map_err(super::to_py_err)?;
-        let attr = if let Ok(attr) = attr.extract::<pyo3::PyRef<'_, super::attributes::PyAttribute>>() {
-            dyn_clone::clone_box(&*attr.inner)
-        } else {
-            let attr = attr.call_method0("into_attr")?;
-            let attr = attr.extract::<pyo3::PyRef<'_, super::attributes::PyAttribute>>()?;
-            dyn_clone::clone_box(&*attr.inner)
-        };
+        let id: ::pliron::identifier::Identifier = name.try_into().map_err(super::to_py_err)?;
+        let attr =
+            if let Ok(attr) = attr.extract::<pyo3::PyRef<'_, super::attributes::PyAttribute>>() {
+                ::pliron::dyn_clone::clone_box(&*attr.inner)
+            } else {
+                let attr = attr.call_method0("into_attr")?;
+                let attr = attr.extract::<pyo3::PyRef<'_, super::attributes::PyAttribute>>()?;
+                ::pliron::dyn_clone::clone_box(&*attr.inner)
+            };
         self.ptr.deref_mut(ctx).attributes.0.insert(id, attr);
         Ok(())
     }

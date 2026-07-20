@@ -101,10 +101,15 @@ pytest tests/
 
 ```
 pliron-python/
-├── Cargo.toml              # Rust cdylib crate (PyO3 extension)
+├── Cargo.toml              # Rust bindings crate (rlib + cdylib, PyO3 extension)
 ├── pyproject.toml           # Python package metadata (maturin backend)
 ├── src/
-│   └── lib.rs               # PyO3 module entry point
+│   ├── lib.rs               # PyO3 module entry point, context/error/registration machinery
+│   ├── context.rs …         # hand-written core IR wrappers (Operation, BasicBlock, …)
+│   ├── py_map.rs            # Rust↔Python type bridge (PyMap)
+│   ├── irbuild/             # inserter/rewriter bindings (pliron.irbuild)
+│   └── dialects/
+│       └── builtin.rs       # builtin-dialect wrappers, generated via pliron-python-derive
 ├── python/
 │   └── pliron/
 │       ├── __init__.py       # Re-exports from the native extension
@@ -112,3 +117,8 @@ pliron-python/
 └── tests/
     └── test_bindings.py      # pytest suite
 ```
+
+The Python codegen macros live in the sibling
+[`pliron-python-derive`](../pliron-python-derive) crate (re-exported here as
+`pliron_python::derive`); the core `pliron` crate itself is entirely
+Python-free.

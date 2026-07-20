@@ -1,4 +1,4 @@
-//! Python bindings for [`crate::irbuild::inserter`].
+//! Python bindings for [`::pliron::irbuild::inserter`].
 //!
 //! - [`PyOpInsertionPoint`] / [`PyBlockInsertionPoint`] — first-class insertion
 //!   point objects (`pliron.irbuild.OpInsertionPoint` / `BlockInsertionPoint`),
@@ -11,7 +11,7 @@
 //!   object. Not a `#[pyclass]`; used where Rust entry points need a
 //!   Python-implemented inserter. Unlike listener dispatch, inserter methods
 //!   are **required effects**, so a missing/raising method is a hard failure
-//!   (see [`call_required`]).
+//!   (see `call_required`).
 //! - [`PyIRInserter`] — `pliron.irbuild.IRInserter`, a `#[pyclass]` wrapping the
 //!   native [`IRInserter<PyInsertionListener>`]; every method delegates to the
 //!   wrapped native inserter. The optional `listener` is any (duck-typed) Python
@@ -24,13 +24,13 @@
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-use alloc::{
+use std::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
 
-use crate::{
+use ::pliron::{
     basic_block::BasicBlock,
     context::{Context, Ptr},
     identifier::Identifier,
@@ -41,15 +41,13 @@ use crate::{
 };
 
 use super::listener::PyInsertionListener;
-use crate::python::{
-    basic_block::PyBasicBlock, operation::PyOperation, region::PyRegion, types::PyType,
-};
+use crate::{basic_block::PyBasicBlock, operation::PyOperation, region::PyRegion, types::PyType};
 
 // ---------------------------------------------------------------------------
 // Insertion points
 // ---------------------------------------------------------------------------
 
-/// Where the next [Operation](crate::operation::Operation) will be inserted
+/// Where the next [Operation](::pliron::operation::Operation) will be inserted
 /// (`pliron.irbuild.OpInsertionPoint`).
 #[pyclass(unsendable, name = "OpInsertionPoint")]
 #[derive(Clone)]
@@ -62,31 +60,41 @@ impl PyOpInsertionPoint {
     /// An unset insertion point.
     #[staticmethod]
     fn unset() -> Self {
-        Self { inner: OpInsertionPoint::Unset }
+        Self {
+            inner: OpInsertionPoint::Unset,
+        }
     }
 
     /// Insert at the start of `block`.
     #[staticmethod]
     fn at_block_start(block: &PyBasicBlock) -> Self {
-        Self { inner: OpInsertionPoint::AtBlockStart(block.ptr) }
+        Self {
+            inner: OpInsertionPoint::AtBlockStart(block.ptr),
+        }
     }
 
     /// Insert at the end of `block`.
     #[staticmethod]
     fn at_block_end(block: &PyBasicBlock) -> Self {
-        Self { inner: OpInsertionPoint::AtBlockEnd(block.ptr) }
+        Self {
+            inner: OpInsertionPoint::AtBlockEnd(block.ptr),
+        }
     }
 
     /// Insert just after `op`.
     #[staticmethod]
     fn after_operation(op: &PyOperation) -> Self {
-        Self { inner: OpInsertionPoint::AfterOperation(op.ptr) }
+        Self {
+            inner: OpInsertionPoint::AfterOperation(op.ptr),
+        }
     }
 
     /// Insert just before `op`.
     #[staticmethod]
     fn before_operation(op: &PyOperation) -> Self {
-        Self { inner: OpInsertionPoint::BeforeOperation(op.ptr) }
+        Self {
+            inner: OpInsertionPoint::BeforeOperation(op.ptr),
+        }
     }
 
     /// Is the insertion point set?
@@ -96,12 +104,15 @@ impl PyOpInsertionPoint {
 
     /// The block insertion will occur in, if known.
     fn get_insertion_block(&self) -> PyResult<Option<PyBasicBlock>> {
-        let ctx = crate::python::get_ctx()?;
-        Ok(self.inner.get_insertion_block(ctx).map(|ptr| PyBasicBlock { ptr }))
+        let ctx = crate::get_ctx()?;
+        Ok(self
+            .inner
+            .get_insertion_block(ctx)
+            .map(|ptr| PyBasicBlock { ptr }))
     }
 
     fn __str__(&self) -> PyResult<String> {
-        let ctx = crate::python::get_ctx()?;
+        let ctx = crate::get_ctx()?;
         Ok(format!("{}", self.inner.disp(ctx)))
     }
 
@@ -110,7 +121,7 @@ impl PyOpInsertionPoint {
     }
 }
 
-/// Where the next [BasicBlock](crate::basic_block::BasicBlock) will be inserted
+/// Where the next [BasicBlock](::pliron::basic_block::BasicBlock) will be inserted
 /// (`pliron.irbuild.BlockInsertionPoint`).
 #[pyclass(unsendable, name = "BlockInsertionPoint")]
 #[derive(Clone)]
@@ -123,31 +134,41 @@ impl PyBlockInsertionPoint {
     /// An unset insertion point.
     #[staticmethod]
     fn unset() -> Self {
-        Self { inner: BlockInsertionPoint::Unset }
+        Self {
+            inner: BlockInsertionPoint::Unset,
+        }
     }
 
     /// Insert at the start of `region`.
     #[staticmethod]
     fn at_region_start(region: &PyRegion) -> Self {
-        Self { inner: BlockInsertionPoint::AtRegionStart(region.ptr) }
+        Self {
+            inner: BlockInsertionPoint::AtRegionStart(region.ptr),
+        }
     }
 
     /// Insert at the end of `region`.
     #[staticmethod]
     fn at_region_end(region: &PyRegion) -> Self {
-        Self { inner: BlockInsertionPoint::AtRegionEnd(region.ptr) }
+        Self {
+            inner: BlockInsertionPoint::AtRegionEnd(region.ptr),
+        }
     }
 
     /// Insert just after `block`.
     #[staticmethod]
     fn after_block(block: &PyBasicBlock) -> Self {
-        Self { inner: BlockInsertionPoint::AfterBlock(block.ptr) }
+        Self {
+            inner: BlockInsertionPoint::AfterBlock(block.ptr),
+        }
     }
 
     /// Insert just before `block`.
     #[staticmethod]
     fn before_block(block: &PyBasicBlock) -> Self {
-        Self { inner: BlockInsertionPoint::BeforeBlock(block.ptr) }
+        Self {
+            inner: BlockInsertionPoint::BeforeBlock(block.ptr),
+        }
     }
 
     /// Is the insertion point set?
@@ -157,12 +178,15 @@ impl PyBlockInsertionPoint {
 
     /// The region insertion will occur in, if known.
     fn get_insertion_region(&self) -> PyResult<Option<PyRegion>> {
-        let ctx = crate::python::get_ctx()?;
-        Ok(self.inner.get_insertion_region(ctx).map(|ptr| PyRegion { ptr }))
+        let ctx = crate::get_ctx()?;
+        Ok(self
+            .inner
+            .get_insertion_region(ctx)
+            .map(|ptr| PyRegion { ptr }))
     }
 
     fn __str__(&self) -> PyResult<String> {
-        let ctx = crate::python::get_ctx()?;
+        let ctx = crate::get_ctx()?;
         Ok(format!("{}", self.inner.disp(ctx)))
     }
 
@@ -190,13 +214,15 @@ where
         Ok(ret) => ret.unbind(),
         Err(err) => {
             err.print(py);
-            panic!("required method `{method}` missing or failed on Python inserter/rewriter object");
+            panic!(
+                "required method `{method}` missing or failed on Python inserter/rewriter object"
+            );
         }
     })
 }
 
 /// A Python object as a Rust [`Inserter`]. Each trait method dispatches to the
-/// same-named method on the wrapped object (see [`call_required`] for the
+/// same-named method on the wrapped object (see `call_required` for the
 /// failure semantics). The `&dyn Op` variants forward to the `*_operation`
 /// ones, exactly as [`IRInserter`] does — Python only sees generic `Operation`
 /// handles.
@@ -219,19 +245,27 @@ macro_rules! impl_python_inserter {
     ($ty:ty) => {
         impl Inserter for $ty {
             fn append_operation(&mut self, _ctx: &Context, operation: Ptr<Operation>) {
-                call_required(&self.obj, "append_operation", (PyOperation { ptr: operation },));
+                call_required(
+                    &self.obj,
+                    "append_operation",
+                    (PyOperation { ptr: operation },),
+                );
             }
 
-            fn append_op(&mut self, ctx: &Context, op: &dyn crate::op::Op) {
-                self.append_operation(ctx, crate::op::Op::get_operation(op));
+            fn append_op(&mut self, ctx: &Context, op: &dyn ::pliron::op::Op) {
+                self.append_operation(ctx, ::pliron::op::Op::get_operation(op));
             }
 
             fn insert_operation(&mut self, _ctx: &Context, operation: Ptr<Operation>) {
-                call_required(&self.obj, "insert_operation", (PyOperation { ptr: operation },));
+                call_required(
+                    &self.obj,
+                    "insert_operation",
+                    (PyOperation { ptr: operation },),
+                );
             }
 
-            fn insert_op(&mut self, ctx: &Context, op: &dyn crate::op::Op) {
-                self.insert_operation(ctx, crate::op::Op::get_operation(op));
+            fn insert_op(&mut self, ctx: &Context, op: &dyn ::pliron::op::Op) {
+                self.insert_operation(ctx, ::pliron::op::Op::get_operation(op));
             }
 
             fn insert_block(
@@ -244,7 +278,9 @@ macro_rules! impl_python_inserter {
                     &self.obj,
                     "insert_block",
                     (
-                        PyBlockInsertionPoint { inner: insertion_point },
+                        PyBlockInsertionPoint {
+                            inner: insertion_point,
+                        },
                         PyBasicBlock { ptr: block },
                     ),
                 );
@@ -263,7 +299,9 @@ macro_rules! impl_python_inserter {
                     &self.obj,
                     "create_block",
                     (
-                        PyBlockInsertionPoint { inner: insertion_point },
+                        PyBlockInsertionPoint {
+                            inner: insertion_point,
+                        },
                         arg_types,
                         label.map(|l| l.to_string()),
                     ),
@@ -326,14 +364,14 @@ macro_rules! delegating_inserter_pymethods {
         impl $py_ty {
             /// Append `op` at the insertion point and advance the point past it.
             fn append_operation(&mut self, op: &PyOperation) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 self.inner.append_operation(ctx, op.ptr);
                 Ok(())
             }
 
             /// Insert `op` at the insertion point *without* advancing it.
             fn insert_operation(&mut self, op: &PyOperation) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 self.inner.insert_operation(ctx, op.ptr);
                 Ok(())
             }
@@ -344,8 +382,9 @@ macro_rules! delegating_inserter_pymethods {
                 insertion_point: &PyBlockInsertionPoint,
                 block: &PyBasicBlock,
             ) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
-                self.inner.insert_block(ctx, insertion_point.inner, block.ptr);
+                let ctx = crate::get_ctx()?;
+                self.inner
+                    .insert_block(ctx, insertion_point.inner, block.ptr);
                 Ok(())
             }
 
@@ -359,12 +398,12 @@ macro_rules! delegating_inserter_pymethods {
                 arg_types: Vec<Bound<'_, PyAny>>,
                 label: Option<&str>,
             ) -> PyResult<PyBasicBlock> {
-                let arg_types = crate::python::types::type_handles_from_any(&arg_types)?;
-                let ctx = crate::python::get_ctx_mut()?;
+                let arg_types = crate::types::type_handles_from_any(&arg_types)?;
+                let ctx = crate::get_ctx_mut()?;
                 let label = label
                     .map(|s| Identifier::try_from(s.to_string()))
                     .transpose()
-                    .map_err(crate::python::to_py_err)?;
+                    .map_err(crate::to_py_err)?;
                 let ptr = self
                     .inner
                     .create_block(ctx, insertion_point.inner, label, arg_types);
@@ -373,7 +412,9 @@ macro_rules! delegating_inserter_pymethods {
 
             /// The current op insertion point.
             fn get_insertion_point(&self) -> PyOpInsertionPoint {
-                PyOpInsertionPoint { inner: self.inner.get_insertion_point() }
+                PyOpInsertionPoint {
+                    inner: self.inner.get_insertion_point(),
+                }
             }
 
             /// Is the op insertion point set?
@@ -383,7 +424,7 @@ macro_rules! delegating_inserter_pymethods {
 
             /// The block the next insertion will occur in, if known.
             fn get_insertion_block(&self) -> PyResult<Option<PyBasicBlock>> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 Ok(self
                     .inner
                     .get_insertion_block(ctx)
@@ -414,7 +455,8 @@ macro_rules! delegating_inserter_pymethods {
             /// Attach `listener` (any object implementing the listener
             /// protocol's `notify_*` hooks). Replaces any existing listener.
             fn set_listener(&mut self, py: Python<'_>, listener: Py<PyAny>) {
-                self.inner.set_listener(<$listener>::new(listener.clone_ref(py)));
+                self.inner
+                    .set_listener(<$listener>::new(listener.clone_ref(py)));
                 self.listener_obj = Some(listener);
             }
         }
@@ -440,6 +482,9 @@ impl PyIRInserter {
         if let Some(obj) = &listener {
             inner.set_listener(PyInsertionListener::new(obj.clone_ref(py)));
         }
-        PyIRInserter { inner, listener_obj: listener }
+        PyIRInserter {
+            inner,
+            listener_obj: listener,
+        }
     }
 }

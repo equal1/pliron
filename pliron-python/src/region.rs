@@ -1,15 +1,15 @@
-//! [`PyRegion`] — Python wrapper for [`crate::region::Region`].
+//! [`PyRegion`] — Python wrapper for [`::pliron::region::Region`].
 
 use pyo3::prelude::*;
 
-use alloc::{format, string::String};
+use std::{format, string::String};
 
-use crate::{
+use ::pliron::{
     basic_block::BasicBlock,
+    common_traits::Verify,
     context::Ptr,
     linked_list::{ContainsLinkedList, LinkedList},
     printable::Printable,
-    common_traits::Verify,
     region::Region,
 };
 

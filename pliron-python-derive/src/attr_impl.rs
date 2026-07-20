@@ -1,3 +1,5 @@
+//! `#[pymethods]` generation mirroring an attribute's `impl` block.
+
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{FnArg, ImplItem, ItemImpl, Pat, ReturnType, Signature, Type, Visibility, parse2};
@@ -6,17 +8,17 @@ use crate::py_type_mapper::{
     ParamKind, classify, pymap_path, return_mentions_self, substitute_self,
 };
 
-/// Entry point for `#[pliron_op_impl]`.
+/// Generate a `#[pyo3::pymethods] impl Py<Name> { ... }` block containing Python
+/// wrappers for every `pub` function of the given `impl` block.
 ///
-/// Emits the original `impl` block unchanged, then generates a
-/// `#[cfg(feature = "python")] #[pyo3::pymethods] impl Py<Name> { ... }` block.
-///
-/// Ops are stored as `Ptr<Operation>` — analogous to the typed-pointer form of
-/// types. Instance methods may or may not need `&Context` depending on what the
-/// underlying Rust method calls; the macro detects use of `&Context`/`&mut Context`
-/// parameters and injects `ctx` only when needed. `Self` returns are wrapped as
-/// `PyMyOp { ptr: my_op.op }`.
-pub(crate) fn pliron_op_impl(item: impl Into<TokenStream>) -> syn::Result<TokenStream> {
+/// `emit_original` controls whether the original `impl` block is re-emitted in
+/// front of the generated code: true for the attribute form (`#[py_attr_impl]` on
+/// a local item), false for the reflect-export form (the `impl` lives in a
+/// foreign crate and must not be duplicated).
+pub(crate) fn gen_attr_impl(
+    item: impl Into<TokenStream>,
+    emit_original: bool,
+) -> syn::Result<TokenStream> {
     let item: ItemImpl = parse2(item.into())?;
 
     let rust_ty = extract_self_type(&item.self_ty)?;
@@ -40,30 +42,35 @@ pub(crate) fn pliron_op_impl(item: impl Into<TokenStream>) -> syn::Result<TokenS
         quote! {}
     } else {
         quote! {
-            #[cfg(feature = "python")]
-            #[::pliron::pyo3::pymethods(crate = "::pliron::pyo3")]
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
             impl #py_ty_name {
                 #(#py_methods)*
             }
         }
     };
 
+    let original = if emit_original {
+        quote! { #item }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
-        #item
+        #original
         #(#method_errors)*
         #py_block
     })
 }
 
 fn extract_self_type(ty: &Type) -> syn::Result<syn::Ident> {
-    if let Type::Path(tp) = ty {
-        if let Some(last) = tp.path.segments.last() {
-            return Ok(last.ident.clone());
-        }
+    if let Type::Path(tp) = ty
+        && let Some(last) = tp.path.segments.last()
+    {
+        return Ok(last.ident.clone());
     }
     Err(syn::Error::new_spanned(
         ty,
-        "#[pliron_op_impl] requires a concrete type path (e.g. `impl MyOp`)",
+        "py_attr_impl requires a concrete type path (e.g. `impl MyAttr`)",
     ))
 }
 
@@ -77,8 +84,19 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
     let method_name = &sig.ident;
     let self_kind = classify_self(sig);
 
+    // The wrapper holds the concrete `#rust_ty` by value, so we borrow it
+    // directly — no downcast.
+    let downcast_stmt = match &self_kind {
+        SelfKind::Ref => quote! {
+            let __inner = &self.inner;
+        },
+        SelfKind::RefMut => quote! {
+            let __inner = &mut self.inner;
+        },
+        SelfKind::Static => quote! {},
+    };
+
     let mut needs_ctx = false;
-    let mut needs_mut_ctx = false;
     let mut py_params: Vec<TokenStream> = Vec::new();
     let mut call_args: Vec<TokenStream> = Vec::new();
     let pymap = pymap_path();
@@ -97,9 +115,6 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
         match classify(&param_ty) {
             Some(ParamKind::ContextParam) => {
                 needs_ctx = true;
-                if is_mut_ref(&param_ty) {
-                    needs_mut_ctx = true;
-                }
                 call_args.push(quote! { ctx });
             }
             Some(ParamKind::Trivial) => {
@@ -117,30 +132,19 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
             None => {
                 return Err(syn::Error::new_spanned(
                     &pat_ty.ty,
-                    "#[pliron_op_impl]: unsupported parameter shape",
+                    "py_attr_impl: unsupported parameter shape",
                 ));
             }
         }
     }
 
-    let ctx_inject = if needs_mut_ctx {
-        quote! { let ctx = ::pliron::python::get_ctx_mut()?; }
-    } else if needs_ctx {
-        quote! { let ctx = ::pliron::python::get_ctx()?; }
+    let ctx_inject = if needs_ctx {
+        quote! { let ctx = ::pliron_python::get_ctx()?; }
     } else {
         quote! {}
     };
 
-    // For instance methods we need a Rust-side handle (`__inner: MyOp`) to call
-    // the user's method. `MyOp::from_operation(ptr)` reconstructs it.
-    let downcast_stmt = match &self_kind {
-        SelfKind::Ref | SelfKind::RefMut => quote! {
-            let __inner = <#rust_ty as ::pliron::op::Op>::from_operation(self.ptr);
-        },
-        SelfKind::Static => quote! {},
-    };
-
-    let ret_info = map_return_type(&sig.output, rust_ty, needs_ctx)?;
+    let ret_info = map_return_type(&sig.output, rust_ty)?;
     let py_ret_ty = &ret_info.py_ret_ty;
     let wrap_result = &ret_info.wrap_result;
 
@@ -161,8 +165,8 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
     };
 
     let body = quote! {
-        #ctx_inject
         #downcast_stmt
+        #ctx_inject
         let __result = #call_expr;
         #wrap_result
     };
@@ -173,12 +177,6 @@ fn gen_py_method(sig: &Signature, rust_ty: &syn::Ident) -> syn::Result<TokenStre
             #body
         }
     })
-}
-
-/// True for a `&mut T` reference type. Used to decide whether a `Context`
-/// parameter needs `get_ctx_mut()` rather than the shared `get_ctx()`.
-fn is_mut_ref(ty: &Type) -> bool {
-    matches!(ty, Type::Reference(r) if r.mutability.is_some())
 }
 
 fn classify_self(sig: &Signature) -> SelfKind {
@@ -200,7 +198,7 @@ fn extract_pat_ident(pat: &Pat) -> syn::Result<&syn::Ident> {
     }
     Err(syn::Error::new_spanned(
         pat,
-        "#[pliron_op_impl]: only simple identifier patterns are supported in function parameters",
+        "py_attr_impl: only simple identifier patterns are supported in function parameters",
     ))
 }
 
@@ -209,43 +207,34 @@ struct ReturnInfo {
     wrap_result: TokenStream,
 }
 
-fn map_return_type(
-    ret: &ReturnType,
-    rust_ty: &syn::Ident,
-    always_pyresult: bool,
-) -> syn::Result<ReturnInfo> {
+fn map_return_type(ret: &ReturnType, rust_ty: &syn::Ident) -> syn::Result<ReturnInfo> {
     let inner_ty: Option<&Type> = match ret {
         ReturnType::Default => None,
         ReturnType::Type(_, ty) => Some(ty),
     };
 
     let Some(ty) = inner_ty else {
-        return Ok(if always_pyresult {
-            ReturnInfo {
-                py_ret_ty: quote!(::pliron::pyo3::PyResult<()>),
-                wrap_result: quote! { Ok(()) },
-            }
-        } else {
-            ReturnInfo {
-                py_ret_ty: quote!(()),
-                wrap_result: quote! {},
-            }
+        return Ok(ReturnInfo {
+            py_ret_ty: quote!(()),
+            wrap_result: quote! {},
         });
     };
 
+    // Result<T, E> → PyResult<<T as PyMap>::Owned> with map_err.
     if let Some(ok_ty) = extract_result_ok(ty) {
         let ok_ty = substitute_self(ok_ty, rust_ty);
         let inner = map_inner_return(&ok_ty)?;
         let py_inner = &inner.py_ty;
         let converter = &inner.converter;
         return Ok(ReturnInfo {
-            py_ret_ty: quote!(::pliron::pyo3::PyResult<#py_inner>),
+            py_ret_ty: quote!(::pliron_python::pyo3::PyResult<#py_inner>),
             wrap_result: quote! {
-                __result.map(|__val| { #converter }).map_err(::pliron::python::to_py_err)
+                __result.map(|__val| { #converter }).map_err(::pliron_python::to_py_err)
             },
         });
     }
 
+    // Self / Result<Self> retain Self until substitution above.
     let ty = if return_mentions_self(ty) {
         substitute_self(ty, rust_ty)
     } else {
@@ -254,18 +243,10 @@ fn map_return_type(
     let inner = map_inner_return(&ty)?;
     let py_ty_out = &inner.py_ty;
     let converter = &inner.converter;
-
-    if always_pyresult {
-        Ok(ReturnInfo {
-            py_ret_ty: quote!(::pliron::pyo3::PyResult<#py_ty_out>),
-            wrap_result: quote! { let __val = __result; Ok(#converter) },
-        })
-    } else {
-        Ok(ReturnInfo {
-            py_ret_ty: quote!(#py_ty_out),
-            wrap_result: quote! { let __val = __result; #converter },
-        })
-    }
+    Ok(ReturnInfo {
+        py_ret_ty: quote!(#py_ty_out),
+        wrap_result: quote! { let __val = __result; #converter },
+    })
 }
 
 struct InnerReturn {
@@ -278,20 +259,22 @@ fn map_inner_return(ty: &Type) -> syn::Result<InnerReturn> {
     match classify(ty) {
         Some(ParamKind::ContextParam) => Err(syn::Error::new_spanned(
             ty,
-            "#[pliron_op_impl]: `&Context` cannot be a return type",
+            "py_attr_impl: `&Context` cannot be a return type",
         )),
         Some(ParamKind::Trivial) => Ok(InnerReturn {
             py_ty: quote!(#ty),
             converter: quote! { __val },
         }),
         Some(ParamKind::PyMapped) => {
-            if let Type::Tuple(tt) = ty {
-                if tt.elems.is_empty() {
-                    return Ok(InnerReturn {
-                        py_ty: quote!(()),
-                        converter: quote! {},
-                    });
-                }
+            // `()` is classified as PyMapped above (it isn't recognized as primitive),
+            // so handle the unit case explicitly here.
+            if let Type::Tuple(tt) = ty
+                && tt.elems.is_empty()
+            {
+                return Ok(InnerReturn {
+                    py_ty: quote!(()),
+                    converter: quote! {},
+                });
             }
             Ok(InnerReturn {
                 py_ty: quote!(<#ty as #pymap>::Owned),
@@ -300,7 +283,7 @@ fn map_inner_return(ty: &Type) -> syn::Result<InnerReturn> {
         }
         None => Err(syn::Error::new_spanned(
             ty,
-            "#[pliron_op_impl]: unsupported return shape",
+            "py_attr_impl: unsupported return shape",
         )),
     }
 }
@@ -311,11 +294,68 @@ fn extract_result_ok(ty: &Type) -> Option<&Type> {
         if last.ident != "Result" {
             return None;
         }
-        if let syn::PathArguments::AngleBracketed(ab) = &last.arguments {
-            if let Some(syn::GenericArgument::Type(ok_ty)) = ab.args.first() {
-                return Some(ok_ty);
-            }
+        if let syn::PathArguments::AngleBracketed(ab) = &last.arguments
+            && let Some(syn::GenericArgument::Type(ok_ty)) = ab.args.first()
+        {
+            return Some(ok_ty);
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use expect_test::expect;
+    use quote::quote;
+
+    #[test]
+    fn static_and_instance_methods() {
+        let item = quote! {
+            impl StringAttr {
+                pub fn new(value: String) -> Self {
+                    StringAttr(value)
+                }
+                pub fn value(&self) -> String {
+                    self.0.clone()
+                }
+                fn private_ignored(&self) -> String {
+                    "ignored".to_string()
+                }
+            }
+        };
+        let ts = gen_attr_impl(item, true).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r#"
+            impl StringAttr {
+                pub fn new(value: String) -> Self {
+                    StringAttr(value)
+                }
+                pub fn value(&self) -> String {
+                    self.0.clone()
+                }
+                fn private_ignored(&self) -> String {
+                    "ignored".to_string()
+                }
+            }
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyStringAttr {
+                #[staticmethod]
+                fn new(value: String) -> <StringAttr as ::pliron_python::PyMap>::Owned {
+                    let __result = StringAttr::new(value);
+                    let __val = __result;
+                    <StringAttr as ::pliron_python::PyMap>::into_py(__val)
+                }
+                fn value(&self) -> String {
+                    let __inner = &self.inner;
+                    let __result = __inner.value();
+                    let __val = __result;
+                    __val
+                }
+            }
+        "#]]
+        .assert_eq(&got);
+    }
 }

@@ -45,7 +45,7 @@ use crate::{op::Op, operation::Operation};
 
 #[pliron_attr(name = "builtin.identifier", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct IdentifierAttr(Identifier);
+pub struct IdentifierAttr(pub Identifier);
 
 impl IdentifierAttr {
     /// Create a new [IdentifierAttr]
@@ -64,7 +64,7 @@ impl From<IdentifierAttr> for Identifier {
 /// Similar to MLIR's [StringAttr](https://mlir.llvm.org/docs/Dialects/Builtin/#stringattr).
 #[pliron_attr(name = "builtin.string", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct StringAttr(String);
+pub struct StringAttr(pub String);
 
 #[pliron_attr_impl]
 impl StringAttr {
@@ -127,7 +127,7 @@ impl Parsable for StringAttr {
 /// A boolean attribute
 #[pliron_attr(name = "builtin.bool", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct BoolAttr(bool);
+pub struct BoolAttr(pub bool);
 
 #[pliron_attr_impl]
 impl BoolAttr {
@@ -154,8 +154,8 @@ impl From<bool> for BoolAttr {
 #[pliron_attr(name = "builtin.integer")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub struct IntegerAttr {
-    ty: TypedHandle<IntegerType>,
-    val: APInt,
+    pub ty: TypedHandle<IntegerType>,
+    pub val: APInt,
 }
 
 impl Printable for IntegerAttr {
@@ -203,37 +203,6 @@ impl IntegerAttr {
     /// Get the type of the attribute.
     pub fn get_type(&self) -> TypedHandle<IntegerType> {
         self.ty
-    }
-}
-
-/// While we figure ot API int we will define PyIntegerAttr manually
-
-#[cfg(feature = "python")]
-use alloc::string::ToString;
-
-#[cfg(feature = "python")]
-#[::pyo3::pymethods]
-impl PyIntegerAttr {
-    #[staticmethod]
-    fn new(value: i64, ty: &::pyo3::Bound<'_, ::pyo3::PyAny>) -> ::pyo3::PyResult<Self> {
-        let ty_handle = ::pliron::python::types::type_handle_from_any(ty)?;
-        let ctx = ::pliron::python::get_ctx()?;
-        let width = {
-            let ty_guard = ty_handle.deref(ctx);
-            let int_ty = ty_guard.downcast_ref::<IntegerType>().ok_or_else(|| {
-                ::pliron::python::PlironError::new_err("Expected an integer type")
-            })?;
-            int_ty.width() as usize
-        };
-        let ty = TypedHandle::<IntegerType>::from_handle(ty_handle, ctx).map_err(::pliron::python::to_py_err)?;
-        let val = APInt::from_str(&value.to_string(), width, 10).map_err(::pliron::python::to_py_err)?;
-        Ok(Self {
-            inner: IntegerAttr::new(ty, val),
-        })
-    }
-
-    fn value(&self) -> ::pyo3::PyResult<i64> {
-        Ok(self.inner.value().to_i64())
     }
 }
 
@@ -476,7 +445,7 @@ impl MaterializableAttr for FPDoubleAttr {
 /// Similar to MLIR's [DictionaryAttr](https://mlir.llvm.org/docs/Dialects/Builtin/#dictionaryattr),
 #[pliron_attr(name = "builtin.dict", verifier = "succ")]
 #[derive(PartialEq, Clone, Eq, Debug)]
-pub struct DictAttr(AttributeDict);
+pub struct DictAttr(pub AttributeDict);
 
 impl Printable for DictAttr {
     fn fmt(
@@ -569,7 +538,7 @@ impl UnitAttr {
 /// Same as MLIR's [TypeAttr](https://mlir.llvm.org/docs/Dialects/Builtin/#typeattr).
 #[pliron_attr(name = "builtin.type", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct TypeAttr(TypeHandle);
+pub struct TypeAttr(pub TypeHandle);
 
 impl TypeAttr {
     pub fn new(ty: TypeHandle) -> Self {

@@ -177,115 +177,15 @@ impl ToTokens for ImplOp {
             ::pliron::context_registration!(<#name as ::pliron::op::Op>::register);
         });
 
-        // Generate Python class (behind #[cfg(feature = "python")])
-        tokens.extend(gen_py_op_class(name, dialect, op_name));
-    }
-}
-
-/// Generate a `#[pyclass]` wrapper for this operation, gated behind
-/// `#[cfg(feature = "python")]` and auto-registered via `PY_CLASS_REGISTRATIONS`.
-///
-/// The Python class name matches the Rust struct name (e.g. `ModuleOp`).
-/// The generated Rust struct is `Py<StructName>` (e.g. `PyModuleOp`) and is placed
-/// at module scope so that users can add extra `#[pymethods]` blocks (e.g. constructors).
-///
-/// Provides:
-/// - `from_operation(op)` — check the operation's id and wrap
-/// - `operation()` — unwrap to a generic `Operation`
-/// - `__str__`, `__repr__`
-fn gen_py_op_class(
-    struct_name: &syn::Ident,
-    dialect_name: &str,
-    op_name: &str,
-) -> TokenStream {
-    let py_class_name = struct_name.to_string();
-    let full_name = format!("{}.{}", dialect_name, op_name);
-    let py_struct = format_ident!("Py{}", struct_name);
-
-    quote! {
-        #[cfg(feature = "python")]
-        #[::pliron::pyo3::pyclass(unsendable, name = #py_class_name, crate = "::pliron::pyo3")]
-        pub struct #py_struct {
-            pub(crate) ptr: ::pliron::context::Ptr<::pliron::operation::Operation>,
-        }
-
-        #[cfg(feature = "python")]
-        #[::pliron::pyo3::pymethods(crate = "::pliron::pyo3")]
-        impl #py_struct {
-            /// Check the operation's kind and wrap it in a typed handle.
-            #[staticmethod]
-            fn from_operation(
-                op: &::pliron::python::operation::PyOperation,
-            ) -> ::pliron::pyo3::PyResult<Self> {
-                let ctx = ::pliron::python::get_ctx()?;
-                let actual = ::pliron::operation::Operation::get_opid(op.ptr, ctx);
-                let expected = <#struct_name as ::pliron::op::Op>::get_opid_static();
-                if actual != expected {
-                    return Err(::pliron::python::PlironError::new_err(
-                        ::pliron::alloc::format!("Expected op {}, got {}", expected, actual),
-                    ));
-                }
-                Ok(Self { ptr: op.ptr })
-            }
-
-            /// Get the underlying generic Operation handle.
-            fn operation(&self) -> ::pliron::python::operation::PyOperation {
-                ::pliron::python::operation::PyOperation { ptr: self.ptr }
-            }
-
-            fn __str__(&self) -> ::pliron::pyo3::PyResult<::pliron::alloc::string::String> {
-                let ctx = ::pliron::python::get_ctx()?;
-                Ok(::pliron::alloc::format!(
-                    "{}",
-                    ::pliron::printable::Printable::disp(&self.ptr, ctx)
-                ))
-            }
-
-            fn __repr__(&self) -> ::pliron::pyo3::PyResult<::pliron::alloc::string::String> {
-                self.__str__()
-            }
-        }
-
-        #[cfg(feature = "python")]
-        impl ::pliron::python::PyMap for #struct_name {
-            type Owned = #py_struct;
-            type Borrowed<'py> = ::pliron::pyo3::PyRef<'py, #py_struct>;
-
-            fn into_py(self) -> #py_struct {
-                #py_struct {
-                    ptr: <#struct_name as ::pliron::op::Op>::get_operation(&self),
-                }
-            }
-
-            fn from_py(py: ::pliron::pyo3::PyRef<'_, #py_struct>) -> Self {
-                <#struct_name as ::pliron::op::Op>::from_operation(py.ptr)
-            }
-        }
-
-        #[cfg(feature = "python")]
-        const _: () = {
-            use ::pliron::pyo3::prelude::*;
-
-            fn __register_py_op(
-                m: &::pliron::pyo3::Bound<'_, ::pliron::pyo3::types::PyModule>,
-            ) -> ::pliron::pyo3::PyResult<()> {
-                m.add_class::<#py_struct>()?;
-                Ok(())
-            }
-
-            #[cfg_attr(
-                not(target_family = "wasm"),
-                ::pliron::linkme::distributed_slice(
-                    ::pliron::python::statics::PY_CLASS_REGISTRATIONS
-                ),
-                linkme(crate = ::pliron::linkme),
-            )]
-            static __PY_REG: ::pliron::python::PyClassRegistration =
-                ::pliron::python::PyClassRegistration {
-                    name: #full_name,
-                    register: __register_py_op,
-                };
-        };
+        // Export the op's tokens for external binding generators
+        // (see `crate::reflect`). Ops have no user-defined fields, so the
+        // exported item body is empty; consumers only need the ident and name.
+        tokens.extend(crate::reflect::class_export(
+            "op",
+            name,
+            &format!("{}.{}", dialect, op_name),
+            TokenStream::new(),
+        ));
     }
 }
 
@@ -631,83 +531,14 @@ mod tests {
                 }
             }
             ::pliron::context_registration!(< TestOp as ::pliron::op::Op > ::register);
-            #[cfg(feature = "python")]
-            #[::pliron::pyo3::pyclass(unsendable, name = "TestOp", crate = "::pliron::pyo3")]
-            pub struct PyTestOp {
-                pub(crate) ptr: ::pliron::context::Ptr<::pliron::operation::Operation>,
-            }
-            #[cfg(feature = "python")]
-            #[::pliron::pyo3::pymethods(crate = "::pliron::pyo3")]
-            impl PyTestOp {
-                /// Check the operation's kind and wrap it in a typed handle.
-                #[staticmethod]
-                fn from_operation(
-                    op: &::pliron::python::operation::PyOperation,
-                ) -> ::pliron::pyo3::PyResult<Self> {
-                    let ctx = ::pliron::python::get_ctx()?;
-                    let actual = ::pliron::operation::Operation::get_opid(op.ptr, ctx);
-                    let expected = <TestOp as ::pliron::op::Op>::get_opid_static();
-                    if actual != expected {
-                        return Err(
-                            ::pliron::python::PlironError::new_err(
-                                ::pliron::alloc::format!("Expected op {}, got {}", expected, actual),
-                            ),
-                        );
-                    }
-                    Ok(Self { ptr: op.ptr })
-                }
-                /// Get the underlying generic Operation handle.
-                fn operation(&self) -> ::pliron::python::operation::PyOperation {
-                    ::pliron::python::operation::PyOperation {
-                        ptr: self.ptr,
-                    }
-                }
-                fn __str__(&self) -> ::pliron::pyo3::PyResult<::pliron::alloc::string::String> {
-                    let ctx = ::pliron::python::get_ctx()?;
-                    Ok(
-                        ::pliron::alloc::format!(
-                            "{}", ::pliron::printable::Printable::disp(& self.ptr, ctx)
-                        ),
-                    )
-                }
-                fn __repr__(&self) -> ::pliron::pyo3::PyResult<::pliron::alloc::string::String> {
-                    self.__str__()
-                }
-            }
-            #[cfg(feature = "python")]
-            impl ::pliron::python::PyMap for TestOp {
-                type Owned = PyTestOp;
-                type Borrowed<'py> = ::pliron::pyo3::PyRef<'py, PyTestOp>;
-                fn into_py(self) -> PyTestOp {
-                    PyTestOp {
-                        ptr: <TestOp as ::pliron::op::Op>::get_operation(&self),
-                    }
-                }
-                fn from_py(py: ::pliron::pyo3::PyRef<'_, PyTestOp>) -> Self {
-                    <TestOp as ::pliron::op::Op>::from_operation(py.ptr)
-                }
-            }
-            #[cfg(feature = "python")]
-            const _: () = {
-                use ::pliron::pyo3::prelude::*;
-                fn __register_py_op(
-                    m: &::pliron::pyo3::Bound<'_, ::pliron::pyo3::types::PyModule>,
-                ) -> ::pliron::pyo3::PyResult<()> {
-                    m.add_class::<PyTestOp>()?;
-                    Ok(())
-                }
-                #[cfg_attr(
-                    not(target_family = "wasm"),
-                    ::pliron::linkme::distributed_slice(
-                        ::pliron::python::statics::PY_CLASS_REGISTRATIONS
-                    ),
-                    linkme(crate = ::pliron::linkme),
-                )]
-                static __PY_REG: ::pliron::python::PyClassRegistration = ::pliron::python::PyClassRegistration {
-                    name: "testing.testop",
-                    register: __register_py_op,
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! __pliron_reflect_op_TestOp {
+                ($($cb:tt)+) => {
+                    $($cb)+ ! { pliron_reflect_v1, kind : op, ident : TestOp, name :
+                    "testing.testop", item : {} }
                 };
-            };
+            }
         "##]]
         .assert_eq(&got);
     }

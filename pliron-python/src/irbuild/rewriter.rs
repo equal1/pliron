@@ -1,4 +1,4 @@
-//! Python bindings for [`crate::irbuild::rewriter`].
+//! Python bindings for [`::pliron::irbuild::rewriter`].
 //!
 //! - [`PyRewriter`] — a Rust-side dispatch struct (like the listener structs in
 //!   [`super::listener`]): holds a `Py<PyAny>` and implements the Rust
@@ -8,7 +8,7 @@
 //!   object. Not a `#[pyclass]`; used where Rust entry points need a
 //!   Python-implemented rewriter. Rewriter methods are **required effects**, so
 //!   a missing/raising method is a hard failure (see
-//!   [`super::inserter::call_required`]).
+//!   `call_required` (in the `inserter` module)).
 //! - [`PyIRRewriter`] — `pliron.irbuild.IRRewriter`, a `#[pyclass]` wrapping the
 //!   native [`IRRewriter<PyRewriteListener>`]; every method delegates to the
 //!   wrapped native rewriter. The full `Inserter` surface is shared with
@@ -26,9 +26,9 @@
 
 use pyo3::prelude::*;
 
-use alloc::{string::ToString, vec::Vec};
+use std::{string::ToString, vec::Vec};
 
-use crate::{
+use ::pliron::{
     basic_block::BasicBlock,
     context::{Context, Ptr},
     identifier::Identifier,
@@ -44,12 +44,12 @@ use crate::{
 
 use super::{
     inserter::{
-        PyBlockInsertionPoint, PyOpInsertionPoint, call_required,
-        delegating_inserter_pymethods, impl_python_inserter,
+        PyBlockInsertionPoint, PyOpInsertionPoint, call_required, delegating_inserter_pymethods,
+        impl_python_inserter,
     },
     listener::PyRewriteListener,
 };
-use crate::python::{
+use crate::{
     basic_block::PyBasicBlock, operation::PyOperation, region::PyRegion, types::PyType,
     value::PyValue,
 };
@@ -76,7 +76,12 @@ impl PyRewriter {
 impl_python_inserter!(PyRewriter);
 
 impl Rewriter for PyRewriter {
-    fn replace_operation(&mut self, _ctx: &mut Context, op: Ptr<Operation>, new_op: Ptr<Operation>) {
+    fn replace_operation(
+        &mut self,
+        _ctx: &mut Context,
+        op: Ptr<Operation>,
+        new_op: Ptr<Operation>,
+    ) {
         call_required(
             &self.obj,
             "replace_operation",
@@ -130,15 +135,26 @@ impl Rewriter for PyRewriter {
         call_required(
             &self.obj,
             "move_operation",
-            (PyOperation { ptr: op }, PyOpInsertionPoint { inner: new_point }),
+            (
+                PyOperation { ptr: op },
+                PyOpInsertionPoint { inner: new_point },
+            ),
         );
     }
 
-    fn move_block(&mut self, _ctx: &Context, block: Ptr<BasicBlock>, new_point: BlockInsertionPoint) {
+    fn move_block(
+        &mut self,
+        _ctx: &Context,
+        block: Ptr<BasicBlock>,
+        new_point: BlockInsertionPoint,
+    ) {
         call_required(
             &self.obj,
             "move_block",
-            (PyBasicBlock { ptr: block }, PyBlockInsertionPoint { inner: new_point }),
+            (
+                PyBasicBlock { ptr: block },
+                PyBlockInsertionPoint { inner: new_point },
+            ),
         );
     }
 
@@ -176,7 +192,9 @@ impl Rewriter for PyRewriter {
             "inline_region",
             (
                 PyRegion { ptr: src_region },
-                PyBlockInsertionPoint { inner: dest_insertion_point },
+                PyBlockInsertionPoint {
+                    inner: dest_insertion_point,
+                },
             ),
         );
     }
@@ -235,12 +253,15 @@ impl PyIRRewriter {
         if let Some(obj) = &listener {
             inner.set_listener(PyRewriteListener::new(obj.clone_ref(py)));
         }
-        PyIRRewriter { inner, listener_obj: listener }
+        PyIRRewriter {
+            inner,
+            listener_obj: listener,
+        }
     }
 
     /// Replace `op` (erasing it) with `new_op`; result counts must match.
     fn replace_operation(&mut self, op: &PyOperation, new_op: &PyOperation) -> PyResult<()> {
-        let ctx = crate::python::get_ctx_mut()?;
+        let ctx = crate::get_ctx_mut()?;
         self.inner.replace_operation(ctx, op.ptr, new_op.ptr);
         Ok(())
     }
@@ -252,63 +273,73 @@ impl PyIRRewriter {
         new_values: Vec<PyRef<'_, PyValue>>,
     ) -> PyResult<()> {
         let values: Vec<Value> = new_values.iter().map(|v| v.val).collect();
-        let ctx = crate::python::get_ctx_mut()?;
-        self.inner.replace_operation_with_values(ctx, op.ptr, values);
+        let ctx = crate::get_ctx_mut()?;
+        self.inner
+            .replace_operation_with_values(ctx, op.ptr, values);
         Ok(())
     }
 
     /// Replace all uses of `old_value` with `new_value`.
-    fn replace_value_uses_with(&mut self, old_value: &PyValue, new_value: &PyValue) -> PyResult<()> {
-        let ctx = crate::python::get_ctx()?;
-        self.inner.replace_value_uses_with(ctx, old_value.val, new_value.val);
+    fn replace_value_uses_with(
+        &mut self,
+        old_value: &PyValue,
+        new_value: &PyValue,
+    ) -> PyResult<()> {
+        let ctx = crate::get_ctx()?;
+        self.inner
+            .replace_value_uses_with(ctx, old_value.val, new_value.val);
         Ok(())
     }
 
     /// Erase `op` (and its regions). The op must have no uses.
     fn erase_operation(&mut self, op: &PyOperation) -> PyResult<()> {
-        let ctx = crate::python::get_ctx_mut()?;
+        let ctx = crate::get_ctx_mut()?;
         self.inner.erase_operation(ctx, op.ptr);
         Ok(())
     }
 
     /// Erase `block` (and its ops). The block must have no uses.
     fn erase_block(&mut self, block: &PyBasicBlock) -> PyResult<()> {
-        let ctx = crate::python::get_ctx_mut()?;
+        let ctx = crate::get_ctx_mut()?;
         self.inner.erase_block(ctx, block.ptr);
         Ok(())
     }
 
     /// Erase `region` (and its blocks). Invalidates later regions' indices.
     fn erase_region(&mut self, region: &PyRegion) -> PyResult<()> {
-        let ctx = crate::python::get_ctx_mut()?;
+        let ctx = crate::get_ctx_mut()?;
         self.inner.erase_region(ctx, region.ptr);
         Ok(())
     }
 
     /// Unlink `op` from its block (without erasing it).
     fn unlink_operation(&mut self, op: &PyOperation) -> PyResult<()> {
-        let ctx = crate::python::get_ctx()?;
+        let ctx = crate::get_ctx()?;
         self.inner.unlink_operation(ctx, op.ptr);
         Ok(())
     }
 
     /// Unlink `block` from its region (without erasing it).
     fn unlink_block(&mut self, block: &PyBasicBlock) -> PyResult<()> {
-        let ctx = crate::python::get_ctx()?;
+        let ctx = crate::get_ctx()?;
         self.inner.unlink_block(ctx, block.ptr);
         Ok(())
     }
 
     /// Move `op` to `new_point`.
     fn move_operation(&mut self, op: &PyOperation, new_point: &PyOpInsertionPoint) -> PyResult<()> {
-        let ctx = crate::python::get_ctx()?;
+        let ctx = crate::get_ctx()?;
         self.inner.move_operation(ctx, op.ptr, new_point.inner);
         Ok(())
     }
 
     /// Move `block` to `new_point`.
-    fn move_block(&mut self, block: &PyBasicBlock, new_point: &PyBlockInsertionPoint) -> PyResult<()> {
-        let ctx = crate::python::get_ctx()?;
+    fn move_block(
+        &mut self,
+        block: &PyBasicBlock,
+        new_point: &PyBlockInsertionPoint,
+    ) -> PyResult<()> {
+        let ctx = crate::get_ctx()?;
         self.inner.move_block(ctx, block.ptr, new_point.inner);
         Ok(())
     }
@@ -325,9 +356,11 @@ impl PyIRRewriter {
         let label = new_block_label
             .map(|s| Identifier::try_from(s.to_string()))
             .transpose()
-            .map_err(crate::python::to_py_err)?;
-        let ctx = crate::python::get_ctx_mut()?;
-        let ptr = self.inner.split_block(ctx, block.ptr, position.inner, label);
+            .map_err(crate::to_py_err)?;
+        let ctx = crate::get_ctx_mut()?;
+        let ptr = self
+            .inner
+            .split_block(ctx, block.ptr, position.inner, label);
         Ok(PyBasicBlock { ptr })
     }
 
@@ -338,16 +371,17 @@ impl PyIRRewriter {
         src_region: &PyRegion,
         dest_insertion_point: &PyBlockInsertionPoint,
     ) -> PyResult<()> {
-        let ctx = crate::python::get_ctx()?;
-        self.inner.inline_region(ctx, src_region.ptr, dest_insertion_point.inner);
+        let ctx = crate::get_ctx()?;
+        self.inner
+            .inline_region(ctx, src_region.ptr, dest_insertion_point.inner);
         Ok(())
     }
 
     /// Change the type of `value`. `new_type` may be a generic `Type` or any
     /// concrete type wrapper.
     fn set_value_type(&mut self, value: &PyValue, new_type: &Bound<'_, PyAny>) -> PyResult<()> {
-        let handle = crate::python::types::type_handle_from_any(new_type)?;
-        let ctx = crate::python::get_ctx()?;
+        let handle = crate::types::type_handle_from_any(new_type)?;
+        let ctx = crate::get_ctx()?;
         self.inner.set_value_type(ctx, value.val, handle);
         Ok(())
     }

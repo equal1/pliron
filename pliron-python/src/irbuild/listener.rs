@@ -20,10 +20,10 @@
 //! traits by calling the same-named method on it:
 //!
 //! - [`PyInsertionListener`] implements [`InsertionListener`] — the `L` in
-//!   [`IRInserter<L>`](crate::irbuild::inserter::IRInserter).
+//!   [`IRInserter<L>`](::pliron::irbuild::inserter::IRInserter).
 //! - [`PyRewriteListener`] implements [`RewriteListener`] (and, per the
 //!   `RewriteListener: InsertionListener` supertrait, [`InsertionListener`]) —
-//!   the `L` in [`IRRewriter<L>`](crate::irbuild::rewriter::IRRewriter).
+//!   the `L` in [`IRRewriter<L>`](::pliron::irbuild::rewriter::IRRewriter).
 //!
 //! The two are *sibling* structs (Rust has no struct inheritance); the shared
 //! `InsertionListener` impl is generated once for both. Neither is a
@@ -45,9 +45,9 @@
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-use alloc::{format, string::String, vec::Vec};
+use std::{format, string::String, vec::Vec};
 
-use crate::{
+use ::pliron::{
     basic_block::BasicBlock,
     context::{Context, Ptr},
     irbuild::listener::{DummyListener, InsertionListener, Recorder, RewriteListener},
@@ -57,7 +57,7 @@ use crate::{
     value::Value,
 };
 
-use crate::python::{
+use crate::{
     basic_block::PyBasicBlock, operation::PyOperation, region::PyRegion, types::PyType,
     value::PyValue,
 };
@@ -119,10 +119,18 @@ macro_rules! impl_py_insertion_listener {
     ($ty:ty) => {
         impl InsertionListener for $ty {
             fn notify_operation_inserted(&mut self, _ctx: &Context, op: Ptr<Operation>) {
-                dispatch(&self.obj, "notify_operation_inserted", (PyOperation { ptr: op },));
+                dispatch(
+                    &self.obj,
+                    "notify_operation_inserted",
+                    (PyOperation { ptr: op },),
+                );
             }
             fn notify_block_inserted(&mut self, _ctx: &Context, block: Ptr<BasicBlock>) {
-                dispatch(&self.obj, "notify_block_inserted", (PyBasicBlock { ptr: block },));
+                dispatch(
+                    &self.obj,
+                    "notify_block_inserted",
+                    (PyBasicBlock { ptr: block },),
+                );
             }
         }
     };
@@ -133,15 +141,14 @@ impl_py_insertion_listener!(PyRewriteListener);
 
 impl RewriteListener for PyRewriteListener {
     fn notify_operation_erasure(&mut self, _ctx: &Context, op: Ptr<Operation>) {
-        dispatch(&self.obj, "notify_operation_erasure", (PyOperation { ptr: op },));
+        dispatch(
+            &self.obj,
+            "notify_operation_erasure",
+            (PyOperation { ptr: op },),
+        );
     }
 
-    fn notify_value_use_replacement(
-        &mut self,
-        _ctx: &Context,
-        old_value: Value,
-        new_value: Value,
-    ) {
+    fn notify_value_use_replacement(&mut self, _ctx: &Context, old_value: Value, new_value: Value) {
         dispatch(
             &self.obj,
             "notify_value_use_replacement",
@@ -168,19 +175,35 @@ impl RewriteListener for PyRewriteListener {
     }
 
     fn notify_block_erasure(&mut self, _ctx: &Context, block: Ptr<BasicBlock>) {
-        dispatch(&self.obj, "notify_block_erasure", (PyBasicBlock { ptr: block },));
+        dispatch(
+            &self.obj,
+            "notify_block_erasure",
+            (PyBasicBlock { ptr: block },),
+        );
     }
 
     fn notify_region_erasure(&mut self, _ctx: &Context, region: Ptr<Region>) {
-        dispatch(&self.obj, "notify_region_erasure", (PyRegion { ptr: region },));
+        dispatch(
+            &self.obj,
+            "notify_region_erasure",
+            (PyRegion { ptr: region },),
+        );
     }
 
     fn notify_operation_unlinking(&mut self, _ctx: &Context, op: Ptr<Operation>) {
-        dispatch(&self.obj, "notify_operation_unlinking", (PyOperation { ptr: op },));
+        dispatch(
+            &self.obj,
+            "notify_operation_unlinking",
+            (PyOperation { ptr: op },),
+        );
     }
 
     fn notify_block_unlinking(&mut self, _ctx: &Context, block: Ptr<BasicBlock>) {
-        dispatch(&self.obj, "notify_block_unlinking", (PyBasicBlock { ptr: block },));
+        dispatch(
+            &self.obj,
+            "notify_block_unlinking",
+            (PyBasicBlock { ptr: block },),
+        );
     }
 }
 
@@ -217,29 +240,37 @@ macro_rules! delegating_listener_pymethods {
         impl $py_ty {
             #[new]
             fn new() -> Self {
-                Self { inner: <$native>::default() }
+                Self {
+                    inner: <$native>::default(),
+                }
             }
 
             fn notify_operation_inserted(&mut self, op: &PyOperation) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as InsertionListener>::notify_operation_inserted(
-                    &mut self.inner, ctx, op.ptr,
+                    &mut self.inner,
+                    ctx,
+                    op.ptr,
                 );
                 Ok(())
             }
 
             fn notify_block_inserted(&mut self, block: &PyBasicBlock) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as InsertionListener>::notify_block_inserted(
-                    &mut self.inner, ctx, block.ptr,
+                    &mut self.inner,
+                    ctx,
+                    block.ptr,
                 );
                 Ok(())
             }
 
             fn notify_operation_erasure(&mut self, op: &PyOperation) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as RewriteListener>::notify_operation_erasure(
-                    &mut self.inner, ctx, op.ptr,
+                    &mut self.inner,
+                    ctx,
+                    op.ptr,
                 );
                 Ok(())
             }
@@ -249,9 +280,12 @@ macro_rules! delegating_listener_pymethods {
                 old_value: &PyValue,
                 new_value: &PyValue,
             ) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as RewriteListener>::notify_value_use_replacement(
-                    &mut self.inner, ctx, old_value.val, new_value.val,
+                    &mut self.inner,
+                    ctx,
+                    old_value.val,
+                    new_value.val,
                 );
                 Ok(())
             }
@@ -262,41 +296,49 @@ macro_rules! delegating_listener_pymethods {
                 old_type: &PyType,
                 new_type: &PyType,
             ) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as RewriteListener>::notify_value_type_change(
-                    &mut self.inner, ctx, value.val, old_type.ptr, new_type.ptr,
+                    &mut self.inner,
+                    ctx,
+                    value.val,
+                    old_type.ptr,
+                    new_type.ptr,
                 );
                 Ok(())
             }
 
             fn notify_block_erasure(&mut self, block: &PyBasicBlock) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
-                <$native as RewriteListener>::notify_block_erasure(
-                    &mut self.inner, ctx, block.ptr,
-                );
+                let ctx = crate::get_ctx()?;
+                <$native as RewriteListener>::notify_block_erasure(&mut self.inner, ctx, block.ptr);
                 Ok(())
             }
 
             fn notify_region_erasure(&mut self, region: &PyRegion) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as RewriteListener>::notify_region_erasure(
-                    &mut self.inner, ctx, region.ptr,
+                    &mut self.inner,
+                    ctx,
+                    region.ptr,
                 );
                 Ok(())
             }
 
             fn notify_operation_unlinking(&mut self, op: &PyOperation) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as RewriteListener>::notify_operation_unlinking(
-                    &mut self.inner, ctx, op.ptr,
+                    &mut self.inner,
+                    ctx,
+                    op.ptr,
                 );
                 Ok(())
             }
 
             fn notify_block_unlinking(&mut self, block: &PyBasicBlock) -> PyResult<()> {
-                let ctx = crate::python::get_ctx()?;
+                let ctx = crate::get_ctx()?;
                 <$native as RewriteListener>::notify_block_unlinking(
-                    &mut self.inner, ctx, block.ptr,
+                    &mut self.inner,
+                    ctx,
+                    block.ptr,
                 );
                 Ok(())
             }
@@ -326,6 +368,10 @@ impl PyRecorder {
 
     /// The recorded events, in order, each as its debug string.
     fn events(&self) -> Vec<String> {
-        self.inner.events.iter().map(|e| format!("{:?}", e)).collect()
+        self.inner
+            .events
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect()
     }
 }

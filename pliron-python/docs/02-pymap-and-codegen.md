@@ -1,14 +1,75 @@
 # 02 — The `PyMap` bridge and derive codegen
 
 This is the core of the design. Dialect authors write **only** their normal
-`#[pliron_type]` / `#[pliron_attr]` / `#[pliron_op]` definitions; the derive
-macros generate the entire Python `#[pyclass]` surface. The one extension point
-they may touch is the `PyMap` trait, to teach the codegen how a new Rust field
-type crosses the language boundary.
+`#[pliron_type]` / `#[pliron_attr]` / `#[pliron_op]` definitions; the
+`pliron-python-derive` macros generate the entire Python `#[pyclass]` surface
+from them — either from the *reflect token exports* the pliron derives leave
+behind, or stacked directly as attributes on the definitions. The one extension
+point dialect authors may touch is the `PyMap` trait, to teach the codegen how
+a new Rust field type crosses the language boundary.
+
+## The reflect-export mechanism
+
+The core `pliron` crate is Python-free, so the Python codegen cannot run inside
+`def_op`/`def_attribute`/`def_type`. Instead those macros (and thus
+`pliron_op`/`pliron_attr`/`pliron_type`) emit, for every annotated item, an
+inert Python-agnostic token export
+([`pliron-derive/src/reflect.rs`](../../pliron-derive/src/reflect.rs)):
+
+```rust
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __pliron_reflect_<kind>_<Ident> { /* kind: op | attr | ty */ }
+```
+
+The `#[pliron_op_impl]`/`#[pliron_attr_impl]`/`#[pliron_type_impl]` macros
+still exist but are now thin hooks: they re-emit the `impl` block unchanged and
+additionally export its tokens (with function bodies stripped — consumers only
+need signatures) as `__pliron_reflect_<op_impl|attr_impl|ty_impl>_<SelfTy>`.
+
+Invoking such a macro with another macro's path as its sole argument forwards
+the item's tokens to that macro, wrapped in a **versioned envelope**:
+
+```rust
+pliron::__pliron_reflect_op_ModuleOp!(::pliron_python::derive::py_op_from_export);
+// expands to:
+::pliron_python::derive::py_op_from_export! {
+    pliron_reflect_v1,
+    kind: op,                  // op | attr | ty | op_impl | attr_impl | ty_impl
+    ident: ModuleOp,
+    name: "builtin.module",    // absent for *_impl kinds
+    item: { /* item tokens */ }
+}
+```
+
+The exported macros carry no runtime or dependency cost — they are plain token
+containers, and the envelope version (`pliron_reflect_v1`) is the only contract
+between `pliron` and the bindings. One caveat: `#[macro_export]` macros live in
+a flat crate-root namespace, so annotate at most one `impl` block per type with
+a `pliron_*_impl` hook.
+
+`pliron-python-derive` provides every generator in two forms
+([`pliron-python-derive/src/lib.rs`](../../pliron-python-derive/src/lib.rs)):
+
+- **Callback macros** `py_op_from_export!`, `py_attr_from_export!`,
+  `py_type_from_export!`, `py_op_impl_from_export!`, `py_attr_impl_from_export!`,
+  `py_type_impl_from_export!` — consume a reflect envelope, for items defined in
+  a *foreign* crate. This is how `pliron-python/src/dialects/builtin.rs`
+  instantiates the builtin dialect's wrappers.
+- **Attribute macros** `#[py_op]`, `#[py_attr]`, `#[py_type]`, `#[py_op_impl]`,
+  `#[py_attr_impl]`, `#[py_type_impl]` — for items in the crate you are writing.
+  The class ones read the `"dialect.name"` from the sibling
+  `#[pliron_op(name = …)]` / `#[def_op("…")]` attribute (stack them *above* it),
+  or accept `name = "…"` directly.
+
+Generated code references runtime machinery by absolute `::pliron_python::*`
+paths and is **not** cfg-gated — downstream crates gate at the call site with
+`#[cfg_attr(feature = "python", pliron_python::derive::py_op)]` (see
+[05-extending.md](05-extending.md)).
 
 ## The `PyMap` trait
 
-`PyMap` ([`src/python/py_map.rs`](../../src/python/py_map.rs)) is **invisible to
+`PyMap` ([`pliron-python/src/py_map.rs`](../src/py_map.rs)) is **invisible to
 Python**. It exists purely so that derive-generated code can ask, at compile
 time, "what Python type does this Rust field map to, and how do I convert?"
 
@@ -47,9 +108,10 @@ type they differ (value vs `PyRef`).
 | `Vec<T: PyMap>` | `Vec<T::Owned>` | blanket |
 | `Option<T: PyMap>` | `Option<T::Owned>` | blanket |
 
-Builtin-specific impls also live here (gated `#[cfg(feature = "python")]`):
-`Signedness → String` ("signed"/"unsigned"/"signless"), `APInt → String` (one-way:
-`from_py` is `unimplemented!`), `Single`/`Double → f64`,
+Builtin-specific impls also live here: `Signedness → String`
+("signed"/"unsigned"/"signless"), `APInt → String` (one-way: `from_py` is
+`unimplemented!`), `Single`/`Double`/`Half → f64` (`Half` via pliron's
+`apfloat::half_to_f64`/`f64_to_half` helpers),
 `AttributeDict → HashMap<String, PyAttribute>`. These are "reasonable starting
 points" — a dialect can replace any of them with a richer `#[pyclass]` wrapper.
 
@@ -66,7 +128,7 @@ pub trait PyTypeWrapper: pyo3::PyClass + Sized {   // shape of a Py<Name> type w
 }
 pub trait PyMapTarget { type PyClass: PyTypeWrapper<Concrete = Self>; }   // links a Type to its Py wrapper
 
-// blanket impl in the pliron crate (legal — PyMap + TypedHandle both lifted here):
+// blanket impl in pliron-python (legal — PyMap defined here):
 impl<T: Type + PyMapTarget + 'static> PyMap for TypedHandle<T> {
     type Owned = T::PyClass;
     type Borrowed<'py> = PyRef<'py, T::PyClass>;
@@ -75,15 +137,16 @@ impl<T: Type + PyMapTarget + 'static> PyMap for TypedHandle<T> {
 }
 ```
 
-`#[pliron_type]` emits `impl PyMapTarget for MyType` (legal — self type is local)
-and `impl PyTypeWrapper for PyMyType`. The blanket impl then lifts those into a
-full `PyMap for TypedHandle<MyType>` automatically. **This is why a downstream
-dialect needs zero hand-written PyO3 code to expose its types.** Full details in
-[06-type-exposure.md](06-type-exposure.md).
+The generated type class emits `impl PyMapTarget for MyType` (legal wherever
+the wrapper is generated) and `impl PyTypeWrapper for PyMyType`. The blanket
+impl then lifts those into a full `PyMap for TypedHandle<MyType>`
+automatically. **This is why a dialect needs zero hand-written PyO3 code to
+expose its types.** Full details in [06-type-exposure.md](06-type-exposure.md).
 
 ## The type-mapping decision tree
 
-A small module, [`pliron-derive/src/py_type_mapper.rs`](../../pliron-derive/src/py_type_mapper.rs),
+A small module,
+[`pliron-python-derive/src/py_type_mapper.rs`](../../pliron-python-derive/src/py_type_mapper.rs),
 classifies each field/parameter type into one of three kinds. It deliberately
 knows almost nothing about domain types:
 
@@ -112,35 +175,41 @@ drop.
 before classification (`substitute_self`), so `fn get(...) -> TypePtr<Self>`
 becomes a getter returning the concrete `Py<Name>`.
 
-## What `#[pliron_type]` generates
+## What the type generator emits
 
 `#[pliron_type]` is a facade that expands to `#[def_type]` (+ optional
-`format_type`/`verify_succ`/`derive_type_get`); **all Python codegen lives in
-`def_type`** → `gen_py_type_class` in
-[`pliron-derive/src/derive_type.rs`](../../pliron-derive/src/derive_type.rs).
-Everything is wrapped in `#[cfg(feature = "python")]`.
+`format_type`/`verify_succ`/`derive_type_get`) and leaves behind the
+`__pliron_reflect_ty_<Name>` export. **All Python codegen lives in
+`gen_py_type_class`** in
+[`pliron-python-derive/src/type_class.rs`](../../pliron-python-derive/src/type_class.rs),
+reached via `py_type_from_export!` / `#[py_type]`. Nothing is cfg-gated in the
+output; gating (if wanted) is applied by the caller via `cfg_attr`.
 
 In short: it emits `Py<Name> { ptr: TypedHandle<Name> }` (exposed under the bare
 struct name) with `to_type`/`from_type` projections, `get_<field>` getters,
 `__str__`/`__repr__`/`__eq__`/`__hash__`, the `PyTypeWrapper`/`PyMapTarget`
-orphan-rule bridge, and a `PY_CLASS_REGISTRATIONS` entry. The definition macro
-generates **no constructor** — a type's uniqued `get` is exposed via
-`#[pliron_type_impl]` or hand-written (the builtins do the latter).
+orphan-rule bridge, and a `pliron_python::statics::PY_CLASS_REGISTRATIONS`
+entry. The class generator emits **no constructor** — a type's uniqued `get` is
+exposed via the impl mirror (`#[py_type_impl]` /
+`py_type_impl_from_export!`) or hand-written (the builtins hand-write theirs in
+[`pliron-python/src/dialects/builtin.rs`](../src/dialects/builtin.rs)).
 
 The full type-layer design — the generic `Type` face vs. the concrete `Py<Name>`
 face, the `TypedHandle<T>` representation, and `to_type`/`from_type` — lives in
 **[06-type-exposure.md](06-type-exposure.md)**. Attributes and ops are covered
 below.
 
-## What `#[pliron_attr]` generates
+## What the attribute generator emits
 
-`gen_py_attr_class` in [`derive_attr.rs`](../../pliron-derive/src/derive_attr.rs)
-mirrors the type path. Attributes are **owned values** (not arena-interned), so
-the wrapper holds the **concrete struct by value** — the analogue of the type
-wrapper holding a `TypedHandle<T>`:
+`gen_py_attr_class` in
+[`attr_class.rs`](../../pliron-python-derive/src/attr_class.rs)
+(via `py_attr_from_export!` / `#[py_attr]`) mirrors the type path. Attributes
+are **owned values** (not arena-interned), so the wrapper holds the **concrete
+struct by value** — the analogue of the type wrapper holding a
+`TypedHandle<T>`:
 
 ```rust
-#[pyclass(unsendable, name = "StringAttr", crate = "::pliron::pyo3")]
+#[pyclass(unsendable, name = "StringAttr", crate = "::pliron_python::pyo3")]
 pub struct PyStringAttr { pub(crate) inner: StringAttr }   // concrete, not Box<dyn Attribute>
 ```
 
@@ -163,17 +232,18 @@ Generated methods:
   `into_py` moves the struct in, `from_py` clones it out.
 - registration entry keyed by `"dialect.attr"`.
 
-No `#[new]` is generated; constructors come from `#[pliron_attr_impl]` or are
-hand-written. `#[pliron_attr_impl]` methods borrow `&self.inner` (the concrete
-struct) directly and call the native method.
+No `#[new]` is generated; constructors come from the attr-impl mirror
+(`#[py_attr_impl]` / `py_attr_impl_from_export!`) or are hand-written.
+Mirrored methods borrow `&self.inner` (the concrete struct) directly and call
+the native method.
 
-## What `#[pliron_op]` generates
+## What the op generator emits
 
-`gen_py_op_class` in [`derive_op.rs`](../../pliron-derive/src/derive_op.rs)
-produces a thin pointer wrapper:
+`gen_py_op_class` in [`op_class.rs`](../../pliron-python-derive/src/op_class.rs)
+(via `py_op_from_export!` / `#[py_op]`) produces a thin pointer wrapper:
 
 ```rust
-#[pyclass(unsendable, name = "ModuleOp", crate = "::pliron::pyo3")]
+#[pyclass(unsendable, name = "ModuleOp", crate = "::pliron_python::pyo3")]
 pub struct PyModuleOp { pub(crate) ptr: Ptr<Operation> }
 ```
 
@@ -189,15 +259,18 @@ Generated methods are intentionally minimal:
 Structural inspection (operands, results, regions, attributes, navigation) is
 **not** duplicated onto the typed wrapper — it lives on the core `PyOperation`
 (see [03-core-classes.md](03-core-classes.md)). Construction is also not
-generated: ops are built by dialect-authored factory methods (`ModuleOp.new(...)`)
-that build the operands/results/regions Rust-side and return a generic
-`PyOperation`, then placed with `IRInserter`/`insert_*`.
+generated by the class generator: ops are built by dialect-authored factory
+methods (`ModuleOp.new(...)`) — mirrored from the Rust `impl` block via the
+op-impl mirror below — that build the operands/results/regions Rust-side, then
+placed with `IRInserter`/`insert_*`.
 
-## Exposing `impl`-block methods: `#[pliron_*_impl]`
+## Exposing `impl`-block methods: the impl mirrors
 
-A second family of macros — `#[pliron_type_impl]`, `#[pliron_attr_impl]`,
-`#[pliron_op_impl]` — mirrors the **public methods** of an `impl` block into the
-generated `Py<Name>`'s `#[pymethods]`. For each `pub fn`:
+A second family of generators — `type_impl.rs`, `attr_impl.rs`, `op_impl.rs` in
+`pliron-python-derive` (reached via `#[py_type_impl]`/`#[py_attr_impl]`/
+`#[py_op_impl]` or the `py_*_impl_from_export!` macros consuming a
+`#[pliron_*_impl]` hook's export) — mirrors the **public methods** of an `impl`
+block into the generated `Py<Name>`'s `#[pymethods]`. For each `pub fn`:
 
 - `&Context`/`&mut Context` params are **dropped** and injected from the
   thread-local.
@@ -206,8 +279,10 @@ generated `Py<Name>`'s `#[pymethods]`. For each `pub fn`:
 - `PyMapped` returns become `<Ty as PyMap>::Owned` (via `into_py`); `Result<T,E>`
   becomes `PyResult<…>` with `to_py_err`; `Self` is substituted to the concrete
   type.
-- instance methods on a `Type`/`Op` always need the context, so they always
-  return `PyResult<…>`.
+- instance methods on a `Type` always need the context (the handle must be
+  deref'd), so they always return `PyResult<…>`; op methods inject the context
+  (and become `PyResult`) only when the Rust signature takes
+  `&Context`/`&mut Context`.
 
 This is the clean path for exposing a uniqued constructor (e.g. `Type::get`) or a
 typed accessor without writing PyO3 by hand.
@@ -228,23 +303,29 @@ typed accessor without writing PyO3 by hand.
 
 ## Worked example (type)
 
-Source:
+Source, in `pliron` (python-free):
 
 ```rust
 #[pliron_type(name = "builtin.integer", generate_get = true, verifier = "succ")]
-pub struct IntegerType { width: u32, signedness: Signedness }
+pub struct IntegerType { pub width: u32, pub signedness: Signedness }
+```
+
+This leaves behind `pliron::__pliron_reflect_ty_IntegerType!`, which
+`pliron-python/src/dialects/builtin.rs` invokes:
+
+```rust
+pliron::__pliron_reflect_ty_IntegerType!(crate::derive::py_type_from_export);
 ```
 
 Generated (abbreviated — the wrapper holds a `TypedHandle<IntegerType>`, so
-`deref(ctx)` is a `Ref<IntegerType>` and field getters need no downcast):
+`deref(ctx)` is a `Ref<IntegerType>` and field getters need no downcast; all
+paths are absolute `::pliron_python::*`):
 
 ```rust
-#[cfg(feature = "python")]
-#[pyclass(unsendable, name = "IntegerType", crate = "::pliron::pyo3")]
+#[pyclass(unsendable, name = "IntegerType", crate = "::pliron_python::pyo3")]
 pub struct PyIntegerType { pub(crate) ptr: TypedHandle<IntegerType> }
 
-#[cfg(feature = "python")]
-#[pymethods(crate = "::pliron::pyo3")]
+#[pymethods(crate = "::pliron_python::pyo3")]
 impl PyIntegerType {
     #[staticmethod]
     fn from_type(ty: &PyType) -> PyResult<Option<Self>> { /* None on type mismatch */ }
@@ -255,34 +336,35 @@ impl PyIntegerType {
     fn __hash__(&self) -> usize { /* hash to_handle() */ }
 
     fn get_width(&self) -> PyResult<u32> {            // u32 is Trivial -> direct clone
-        let ctx = get_ctx()?;
+        let ctx = ::pliron_python::get_ctx()?;
         Ok(self.ptr.deref(ctx).width.clone())
     }
     fn get_signedness(&self) -> PyResult<String> {    // Signedness is PyMapped -> into_py
-        let ctx = get_ctx()?;
+        let ctx = ::pliron_python::get_ctx()?;
         Ok(<Signedness as PyMap>::into_py(self.ptr.deref(ctx).signedness.clone()))
     }
 }
 
-#[cfg(feature = "python")] impl PyTypeWrapper for PyIntegerType { /* type Concrete = IntegerType; from/to_typed_handle */ }
-#[cfg(feature = "python")] impl PyMapTarget for IntegerType { type PyClass = PyIntegerType; }
-#[cfg(feature = "python")] const _: () = { /* push __PY_REG{"builtin.integer"} into PY_CLASS_REGISTRATIONS */ };
+impl ::pliron_python::PyTypeWrapper for PyIntegerType { /* type Concrete = IntegerType; from/to_typed_handle */ }
+impl ::pliron_python::PyMapTarget for IntegerType { type PyClass = PyIntegerType; }
+const _: () = { /* push __PY_REG{"builtin.integer"} into ::pliron_python::statics::PY_CLASS_REGISTRATIONS */ };
 ```
 
 See [06-type-exposure.md](06-type-exposure.md) for the full type-layer design.
 
-The constructor is **hand-written** in builtin (PyO3 can't infer it):
+The constructor is **hand-written** next to the reflect invocation in
+[`pliron-python/src/dialects/builtin.rs`](../src/dialects/builtin.rs) (PyO3
+can't infer it):
 
 ```rust
-#[cfg(feature = "python")]
 #[pyo3::pymethods]
 impl PyIntegerType {
     #[staticmethod]
     #[pyo3(signature = (width, signedness=None))]
-    fn get(width: u32, signedness: Option<&str>) -> PyResult<PyType> {
-        let ctx = get_ctx_mut()?;
+    fn get(width: u32, signedness: Option<&str>) -> PyResult<PyIntegerType> {
+        let ctx = crate::get_ctx_mut()?;
         let sign = match signedness.unwrap_or("signless") { "signed" => …, … };
-        Ok(PyType { ptr: IntegerType::get(ctx, width, sign).into() })
+        Ok(PyIntegerType { ptr: IntegerType::get(ctx, width, sign) })
     }
 }
 ```

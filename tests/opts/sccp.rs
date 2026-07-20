@@ -21,14 +21,6 @@ use pliron::{
 };
 
 #[pliron_op(
-    name = "test.test_region",
-    format = "region($0)",
-    interfaces = [NOpdsInterface<0>, NResultsInterface<0>],
-    verifier = "succ"
-)]
-pub struct TestRegionOp;
-
-#[pliron_op(
     name = "test.test_two_regions",
     format = "region($0) ` ` region($1)",
     interfaces = [NOpdsInterface<0>, NResultsInterface<0>],

@@ -1,14 +1,17 @@
-//! [`PyValue`] — Python wrapper for [`crate::value::Value`].
+//! [`PyValue`] — Python wrapper for [`::pliron::value::Value`].
 
 use pyo3::prelude::*;
 
-use alloc::{format, string::String, vec::Vec};
+use std::{format, string::String, vec::Vec};
 
-use crate::{
-    common_traits::Verify, printable::Printable, python::basic_block::PyBasicBlock, r#type::Typed, value::{DefiningEntity, Value},
+use ::pliron::{
+    common_traits::Verify,
+    printable::Printable,
+    r#type::Typed,
+    value::{DefiningEntity, Value},
 };
 
-use super::{operation::PyOperation, types::PyType};
+use super::{basic_block::PyBasicBlock, operation::PyOperation, types::PyType};
 
 // #[cfg(feature = "python")]
 // #[pyclass(eq, eq_int, name = "DefiningEntity")]
@@ -84,7 +87,7 @@ impl PyValue {
             .val
             .uses(ctx)
             .into_iter()
-            .map(|u| PyOperation { ptr: u.user_op })
+            .map(|u| PyOperation { ptr: u.user_op() })
             .collect())
     }
 
