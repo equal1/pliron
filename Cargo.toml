@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["pliron-derive", "pliron-llvm", "pliron-llvm/llvm-opt"]
+members = [
+    "pliron-derive",
+    "pliron-llvm",
+    "pliron-llvm/llvm-opt",
+    "pliron-python",
+    "pliron-python-derive",
+]
 
 [package]
 name = "pliron"
@@ -88,6 +94,8 @@ once_vec = "0"
 downcast-rs = "2"
 regex = "1"
 dyn-clone = "1"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3-stub-gen = "0.6"
 
 [[example]]
 name = "kaleidoscope"

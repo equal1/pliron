@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use pliron::derive::{pliron_type, type_interface_impl};
+use pliron::derive::{pliron_type, pliron_type_impl, type_interface_impl};
 
 use crate::{
     builtin::type_interfaces::{FloatTypeInterface, FunctionTypeInterface},
@@ -26,10 +26,11 @@ pub enum Signedness {
 #[pliron_type(name = "builtin.integer", generate_get = true, verifier = "succ")]
 #[derive(Hash, PartialEq, Eq, Debug, Clone)]
 pub struct IntegerType {
-    width: u32,
-    signedness: Signedness,
+    pub width: u32,
+    pub signedness: Signedness,
 }
 
+#[pliron_type_impl]
 impl IntegerType {
     /// Get, if it already exists, an integer type.
     pub fn get_existing(
@@ -114,7 +115,7 @@ impl Printable for IntegerType {
 ///
 #[pliron_type(name = "builtin.function", format = "`<` $0 `>`", verifier = "succ")]
 #[derive(Hash, PartialEq, Eq, Debug)]
-pub struct FunctionType(TypeSig);
+pub struct FunctionType(pub TypeSig);
 
 impl FunctionType {
     /// Get a Function type.

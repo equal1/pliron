@@ -15,19 +15,6 @@ use pliron::{
 
 use pliron_llvm as _;
 
-use pliron::{
-    builtin::op_interfaces::{NOpdsInterface, NResultsInterface},
-    derive::pliron_op,
-};
-
-#[pliron_op(
-    name = "test.test_region",
-    format = "region($0)",
-    interfaces = [NOpdsInterface<0>, NResultsInterface<0>],
-    verifier = "succ"
-)]
-pub struct TestRegionOp;
-
 fn run_simplify_cfg_on_text(input: &str) -> Result<(IRStatus, String, String)> {
     init_env_logger_for_tests!();
     let ctx = &mut Context::new();

@@ -5,6 +5,7 @@ mod derive_op;
 mod derive_type;
 mod interfaces;
 mod irfmt;
+mod reflect;
 mod verify_succ;
 
 use proc_macro::TokenStream;
@@ -768,6 +769,68 @@ pub fn pliron_type(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn pliron_attr(args: TokenStream, input: TokenStream) -> TokenStream {
     to_token_stream(derive_entity::pliron_attr(args, input))
+}
+
+/// `#[pliron_attr_impl]`: Mark an attribute `impl` block for external binding generators.
+///
+/// Emits the original `impl` block unchanged, plus an inert
+/// `__pliron_reflect_attr_impl_<Name>` token-export macro that binding
+/// generators (e.g. `pliron-python-derive` via `pliron-python`) consume to
+/// mirror the block's `pub` methods — without this crate depending on any
+/// binding machinery. See the `reflect` module docs for the envelope format.
+///
+/// ## Example
+/// ```
+/// use pliron::derive::{pliron_attr, pliron_attr_impl};
+///
+/// #[pliron_attr(name = "test.string_attr", format, verifier = "succ")]
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// pub struct StringAttr(String);
+///
+/// #[pliron_attr_impl]
+/// impl StringAttr {
+///     pub fn new(value: String) -> Self { StringAttr(value) }
+///     pub fn value(&self) -> String { self.0.clone() }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn pliron_attr_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    to_token_stream(reflect::impl_hook("attr_impl", item))
+}
+
+/// `#[pliron_op_impl]`: Mark an op `impl` block for external binding generators.
+///
+/// Emits the original `impl` block unchanged, plus an inert
+/// `__pliron_reflect_op_impl_<Name>` token-export macro that binding
+/// generators (e.g. `pliron-python-derive` via `pliron-python`) consume to
+/// mirror the block's `pub` methods — without this crate depending on any
+/// binding machinery. See the `reflect` module docs for the envelope format.
+///
+/// ## Example
+/// ```ignore
+/// #[pliron_op(name = "test.my_op")]
+/// pub struct MyOp;
+///
+/// #[pliron_op_impl]
+/// impl MyOp {
+///     pub fn callee_name(&self, ctx: &Context) -> String { /* ... */ }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn pliron_op_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    to_token_stream(reflect::impl_hook("op_impl", item))
+}
+
+/// `#[pliron_type_impl]`: Mark a type `impl` block for external binding generators.
+///
+/// Emits the original `impl` block unchanged, plus an inert
+/// `__pliron_reflect_ty_impl_<Name>` token-export macro that binding
+/// generators (e.g. `pliron-python-derive` via `pliron-python`) consume to
+/// mirror the block's `pub` methods — without this crate depending on any
+/// binding machinery. See the `reflect` module docs for the envelope format.
+#[proc_macro_attribute]
+pub fn pliron_type_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    to_token_stream(reflect::impl_hook("ty_impl", item))
 }
 
 /// `#[pliron_op(...)]`: Unified macro for defining IR operations.

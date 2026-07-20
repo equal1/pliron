@@ -69,11 +69,21 @@ impl ToTokens for DefAttribute {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let def_struct = &self.input;
         let impl_attribute_trait = &self.impl_attr;
+
         tokens.extend(quote! {
             #def_struct
 
             #impl_attribute_trait
         });
+
+        // Export the attribute's tokens for external binding generators
+        // (see `crate::reflect`).
+        tokens.extend(crate::reflect::derive_input_export(
+            "attr",
+            &self.input,
+            &self.impl_attr.dialect_name,
+            &self.impl_attr.attr_name,
+        ));
     }
 }
 
@@ -173,6 +183,14 @@ mod tests {
             ::pliron::context_registration!(
                 < UnitAttr as ::pliron::attribute::Attribute > ::register
             );
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! __pliron_reflect_attr_UnitAttr {
+                ($($cb:tt)+) => {
+                    $($cb)+ ! { pliron_reflect_v1, kind : attr, ident : UnitAttr, name :
+                    "testing.unit", item : { pub struct UnitAttr; } }
+                };
+            }
         "##]]
         .assert_eq(&got);
     }

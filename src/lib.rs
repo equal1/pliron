@@ -30,7 +30,6 @@ pub use inventory;
 /// A wrapper type that allows collecting any type with [pliron::inventory::collect!].
 #[cfg(target_family = "wasm")]
 pub struct InventoryWrapper<T: 'static>(pub &'static T);
-
 pub mod analyses;
 pub mod attribute;
 pub mod basic_block;
@@ -58,6 +57,7 @@ pub mod symbol_table;
 pub mod r#type;
 pub mod uniqued_any;
 pub mod utils;
+
 pub mod value;
 
 pub mod std_deps;

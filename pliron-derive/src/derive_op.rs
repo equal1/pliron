@@ -176,6 +176,16 @@ impl ToTokens for ImplOp {
 
             ::pliron::context_registration!(<#name as ::pliron::op::Op>::register);
         });
+
+        // Export the op's tokens for external binding generators
+        // (see `crate::reflect`). Ops have no user-defined fields, so the
+        // exported item body is empty; consumers only need the ident and name.
+        tokens.extend(crate::reflect::class_export(
+            "op",
+            name,
+            &format!("{}.{}", dialect, op_name),
+            TokenStream::new(),
+        ));
     }
 }
 
@@ -521,6 +531,14 @@ mod tests {
                 }
             }
             ::pliron::context_registration!(< TestOp as ::pliron::op::Op > ::register);
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! __pliron_reflect_op_TestOp {
+                ($($cb:tt)+) => {
+                    $($cb)+ ! { pliron_reflect_v1, kind : op, ident : TestOp, name :
+                    "testing.testop", item : {} }
+                };
+            }
         "##]]
         .assert_eq(&got);
     }

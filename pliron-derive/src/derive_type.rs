@@ -70,11 +70,21 @@ impl ToTokens for DefType {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let def_struct = &self.input;
         let impl_type = &self.impl_type;
+
         tokens.extend(quote! {
             #def_struct
 
             #impl_type
         });
+
+        // Export the type's tokens for external binding generators
+        // (see `crate::reflect`).
+        tokens.extend(crate::reflect::derive_input_export(
+            "ty",
+            &self.input,
+            &self.impl_type.dialect_name,
+            &self.impl_type.type_name,
+        ));
     }
 }
 
@@ -341,6 +351,14 @@ mod tests {
                 | ctx : & mut ::pliron::context::Context | { < SimpleType as ::pliron::r#type::Type >
                 ::register(ctx); ::pliron::r#type::Type::register_instance(SimpleType {}, ctx); }
             );
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! __pliron_reflect_ty_SimpleType {
+                ($($cb:tt)+) => {
+                    $($cb)+ ! { pliron_reflect_v1, kind : ty, ident : SimpleType, name :
+                    "testing.simple_type", item : { pub struct SimpleType; } }
+                };
+            }
         "##]]
         .assert_eq(&got);
     }
@@ -396,6 +414,15 @@ mod tests {
                 }
             }
             ::pliron::context_registration!(< CompoundType as ::pliron::r#type::Type > ::register);
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! __pliron_reflect_ty_CompoundType {
+                ($($cb:tt)+) => {
+                    $($cb)+ ! { pliron_reflect_v1, kind : ty, ident : CompoundType, name :
+                    "testing.compound_type", item : { pub struct CompoundType { x1 : u32, x2 :
+                    String, } } }
+                };
+            }
         "##]].assert_eq(&got);
     }
 
@@ -450,6 +477,14 @@ mod tests {
                 }
             }
             ::pliron::context_registration!(< EnumType as ::pliron::r#type::Type > ::register);
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! __pliron_reflect_ty_EnumType {
+                ($($cb:tt)+) => {
+                    $($cb)+ ! { pliron_reflect_v1, kind : ty, ident : EnumType, name :
+                    "testing.enum_type", item : { pub enum EnumType { None, One(u32), } } }
+                };
+            }
         "##]]
         .assert_eq(&got);
     }

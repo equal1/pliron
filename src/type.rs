@@ -35,6 +35,23 @@
 //! [TypeHandle]s can be [TypeHandle::deref]'d and downcasted to their concrete types using
 //! [downcast_rs](https://docs.rs/downcast-rs/latest/downcast_rs/#example-without-generics).
 
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::{
+    cell::{Ref, RefCell, RefMut},
+    fmt::{Debug, Display},
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+    ops::Deref,
+};
+
+use downcast_rs::{Downcast, impl_downcast};
+use pliron_derive::format;
+use thiserror::Error;
+
 use crate::{
     arg_err_noloc,
     combine::{Parser, parser},
@@ -52,22 +69,6 @@ use crate::{
     storage_uniquer::TypeValueHash,
     utils::trait_cast::impls_trait_static,
 };
-
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-    vec::Vec,
-};
-use core::{
-    cell::{Ref, RefCell, RefMut},
-    fmt::{Debug, Display},
-    hash::{Hash, Hasher},
-    marker::PhantomData,
-    ops::Deref,
-};
-use downcast_rs::{Downcast, impl_downcast};
-use pliron_derive::format;
-use thiserror::Error;
 
 /// Basic functionality that every type in the IR must implement.
 /// Type objects (instances of a Type) are (mostly) immutable once created,
@@ -444,6 +445,16 @@ impl<T: Type> TypedHandle<T> {
     /// Erase the static Rust type and return the underlying [TypeHandle].
     pub fn to_handle(&self) -> TypeHandle {
         self.0
+    }
+
+    /// Wrap a [TypeHandle] as a [TypedHandle] without verifying that the
+    /// handle's concrete type is `T`.
+    ///
+    /// Unlike [from_handle](Self::from_handle), this does not require a
+    /// [Context]. The caller must guarantee that `handle` refers to a `T`;
+    /// otherwise a later [deref](Self::deref) will panic.
+    pub fn from_handle_unchecked(handle: TypeHandle) -> TypedHandle<T> {
+        TypedHandle(handle, PhantomData::<T>)
     }
 }
 
