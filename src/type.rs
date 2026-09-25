@@ -463,6 +463,16 @@ impl<T: Type> TypedHandle<T> {
     pub fn to_handle(&self) -> TypeHandle {
         self.0
     }
+
+    /// Wrap a [TypeHandle] as a [TypedHandle] without verifying that the
+    /// handle's concrete type is `T`.
+    ///
+    /// Unlike [from_handle](Self::from_handle), this does not require a
+    /// [Context]. The caller must guarantee that `handle` refers to a `T`;
+    /// otherwise a later [deref](Self::deref) will panic.
+    pub fn from_handle_unchecked(handle: TypeHandle) -> TypedHandle<T> {
+        TypedHandle(handle, PhantomData::<T>)
+    }
 }
 
 impl<T: Type> From<TypedHandle<T>> for TypeHandle {

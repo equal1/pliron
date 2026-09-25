@@ -88,6 +88,13 @@ pub fn float_to_f64<T: FloatConvert<Double>>(value: T, loses_info: &mut bool) ->
     double_to_f64(value.convert(loses_info).value)
 }
 
+/// Convert from [rustc_apfloat]'s [Half] (IEEE 16-bit) to Rust [f64].
+///
+/// Widening from `Half` to `Double` is exact, so no precision is lost.
+pub fn half_to_f64(value: Half) -> f64 {
+    float_to_f64(value, &mut false)
+}
+
 /// Convert from Rust [f64] to [rustc_apfloat]'s [Half].
 pub fn f64_to_half(value: f64) -> Half {
     Double::from_bits(value.to_bits().into())
