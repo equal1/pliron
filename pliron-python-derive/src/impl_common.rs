@@ -15,12 +15,29 @@ use crate::py_type_mapper::{ParamKind, classify, pymap_path, substitute_self};
 pub(crate) struct ImplKind {
     /// Macro name used as the prefix of error messages, e.g. `"py_attr_impl"`.
     pub macro_name: &'static str,
-    /// Instance methods always need `ctx` (e.g. types deref their `Ptr` through it).
-    pub instance_needs_ctx: bool,
     /// How an instance method's wrapper reaches the Rust value, given the Rust
-    /// self type and whether the method takes `&mut self`. `None` means methods
-    /// with that receiver can't be wrapped for this kind.
-    pub instance_access: fn(&syn::Ident, bool) -> Option<InstanceAccess>,
+    /// self type and the method's receiver. `None` means methods with that
+    /// receiver can't be wrapped for this kind.
+    pub instance_access: fn(&syn::Ident, InstanceReceiver) -> Option<InstanceAccess>,
+}
+
+/// The receiver of a Rust instance method.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InstanceReceiver {
+    /// `&self`, or any receiver that isn't `&mut self` (e.g. `self`).
+    Ref,
+    /// `&mut self`.
+    RefMut,
+}
+
+impl InstanceReceiver {
+    /// The receiver as written in Rust, for error messages.
+    fn as_str(self) -> &'static str {
+        match self {
+            InstanceReceiver::Ref => "&self",
+            InstanceReceiver::RefMut => "&mut self",
+        }
+    }
 }
 
 /// How an instance method's wrapper reaches the Rust value it calls the method on.
@@ -29,8 +46,11 @@ pub(crate) struct InstanceAccess {
     /// The wrapper's receiver: `&self` or `&mut self`.
     pub receiver: TokenStream,
     /// The statement binding `__inner` (the Rust value whose method is called)
-    /// from the wrapper's `self`. `ctx` is in scope if it was needed.
+    /// from the wrapper's `self`. `ctx` is in scope if [`Self::ctx_access`]
+    /// asks for it.
     pub bind_inner: TokenStream,
+    /// How [`Self::bind_inner`] needs the context.
+    pub ctx_access: CtxAccess,
 }
 
 /// Generate a `#[pyo3::pymethods] impl Py<Name> { ... }` block containing Python
@@ -147,10 +167,8 @@ struct MethodDesc {
 enum Receiver {
     /// No receiver: the wrapper is a `#[staticmethod]`.
     Static,
-    /// `&self` (or `self`), reached as the [`ImplKind`] says.
-    Shared(InstanceAccess),
-    /// `&mut self`, reached as the [`ImplKind`] says.
-    Mut(InstanceAccess),
+    /// `&self` or `&mut self`, reached as the [`ImplKind`] says.
+    Instance(InstanceAccess),
 }
 
 /// One non-`self` parameter of the Rust method.
@@ -191,7 +209,7 @@ enum ValueKind {
 /// How a wrapper obtains the active pliron `Context`, ordered from weakest to
 /// strongest so that the needs of a method's parts combine by taking the `max`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum CtxAccess {
+pub(crate) enum CtxAccess {
     /// The context isn't needed.
     None,
     /// Fetched with `get_ctx()`.
@@ -211,13 +229,12 @@ impl CtxAccess {
         }
     }
 
-    /// What the receiver needs: `Shared` for instance methods of a kind whose
-    /// instance access goes through `ctx`, `None` otherwise.
-    fn of_receiver(receiver: &Receiver, kind: &ImplKind) -> Self {
-        if kind.instance_needs_ctx && !matches!(receiver, Receiver::Static) {
-            CtxAccess::Shared
-        } else {
-            CtxAccess::None
+    /// What the receiver needs: whatever its [`InstanceAccess`] binding needs,
+    /// `None` for static methods.
+    fn of_receiver(receiver: &Receiver) -> Self {
+        match receiver {
+            Receiver::Static => CtxAccess::None,
+            Receiver::Instance(access) => access.ctx_access,
         }
     }
 }
@@ -238,7 +255,7 @@ fn analyse_method(
     let ctx_access = params
         .iter()
         .map(CtxAccess::of_param)
-        .fold(CtxAccess::of_receiver(&receiver, kind), CtxAccess::max);
+        .fold(CtxAccess::of_receiver(&receiver), CtxAccess::max);
     Ok(MethodDesc {
         name: sig.ident.clone(),
         receiver,
@@ -279,22 +296,21 @@ fn analyse_receiver(
     };
     // `Receiver::mutability` is the `mut` of `mut self`; the `mut` of
     // `&mut self` lives in the reference kind.
-    let mutable = matches!(receiver.kind, ReceiverKind::Reference(_, _, Some(_)));
-    let access = (kind.instance_access)(rust_ty, mutable).ok_or_else(|| {
+    let instance_receiver = match receiver.kind {
+        ReceiverKind::Reference(_, _, Some(_)) => InstanceReceiver::RefMut,
+        _ => InstanceReceiver::Ref,
+    };
+    let access = (kind.instance_access)(rust_ty, instance_receiver).ok_or_else(|| {
         syn::Error::new_spanned(
             receiver,
             format!(
                 "{}: `{}` methods are not supported",
                 kind.macro_name,
-                if mutable { "&mut self" } else { "&self" }
+                instance_receiver.as_str()
             ),
         )
     })?;
-    Ok(if mutable {
-        Receiver::Mut(access)
-    } else {
-        Receiver::Shared(access)
-    })
+    Ok(Receiver::Instance(access))
 }
 
 /// Describe each non-`self` parameter of `sig`. Errors for parameters that
@@ -446,10 +462,11 @@ fn emit_method(desc: &MethodDesc, rust_ty: &syn::Ident) -> TokenStream {
             quote! {},
             quote! { #rust_ty::#name(#(#call_args),*) },
         ),
-        Receiver::Shared(access) | Receiver::Mut(access) => {
+        Receiver::Instance(access) => {
             let InstanceAccess {
                 receiver,
                 bind_inner,
+                ..
             } = access;
             (
                 quote! {},

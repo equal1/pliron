@@ -3,27 +3,26 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::impl_common::{ImplKind, InstanceAccess, gen_impl};
+use crate::impl_common::{CtxAccess, ImplKind, InstanceAccess, InstanceReceiver, gen_impl};
 
 const KIND: ImplKind = ImplKind {
     macro_name: "py_type_impl",
-    instance_needs_ctx: true,
-    instance_access: |_rust_ty, mutable| {
-        // Types are uniqued and immutable once created, so `&mut self` methods
-        // can't be wrapped.
-        (!mutable).then(|| InstanceAccess {
+    instance_access: |_rust_ty, receiver| match receiver {
+        InstanceReceiver::Ref => Some(InstanceAccess {
             receiver: quote! { &self },
             // The wrapper holds a `TypedHandle<T>`, so `deref(ctx)` yields a
-            // `Ref<T>` directly — no downcast needed.
+            // `Ref<T>` directly — no downcast needed. Every instance method
+            // therefore needs `ctx`.
             bind_inner: quote! { let __inner = self.ptr.deref(ctx); },
-        })
+            ctx_access: CtxAccess::Shared,
+        }),
+        // Types are uniqued and immutable once created, so `&mut self` methods
+        // can't be wrapped.
+        InstanceReceiver::RefMut => None,
     },
 };
 
 /// Generate `#[pymethods]` for a type `impl` block; see [`gen_impl`].
-///
-/// Types are stored as `TypedHandle<T>`, so instance methods always need `ctx`
-/// to deref, and their wrappers therefore always return `PyResult`.
 pub(crate) fn gen_type_impl(
     item: impl Into<TokenStream>,
     emit_original: bool,

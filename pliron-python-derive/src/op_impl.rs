@@ -3,21 +3,21 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::impl_common::{ImplKind, InstanceAccess, gen_impl};
+use crate::impl_common::{CtxAccess, ImplKind, InstanceAccess, InstanceReceiver, gen_impl};
 
 const KIND: ImplKind = ImplKind {
     macro_name: "py_op_impl",
-    instance_needs_ctx: false,
-    instance_access: |rust_ty, mutable| {
+    instance_access: |rust_ty, receiver| {
         // `MyOp::from_operation(ptr)` reconstructs the Rust-side op handle. It is a
         // fresh copy and the op's data lives in the context, so a `&mut self`
         // method only needs a mutable local, not a mutable wrapper.
-        let mutability = mutable.then(|| quote! { mut });
+        let mutability = matches!(receiver, InstanceReceiver::RefMut).then(|| quote! { mut });
         Some(InstanceAccess {
             receiver: quote! { &self },
             bind_inner: quote! {
                 let #mutability __inner = <#rust_ty as ::pliron::op::Op>::from_operation(self.ptr);
             },
+            ctx_access: CtxAccess::None,
         })
     },
 };

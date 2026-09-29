@@ -3,25 +3,25 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::impl_common::{ImplKind, InstanceAccess, gen_impl};
+use crate::impl_common::{CtxAccess, ImplKind, InstanceAccess, InstanceReceiver, gen_impl};
 
 const KIND: ImplKind = ImplKind {
     macro_name: "py_attr_impl",
-    instance_needs_ctx: false,
-    instance_access: |_rust_ty, mutable| {
+    instance_access: |_rust_ty, receiver| {
         // The wrapper holds its own copy of the attribute by value, so borrow it
         // directly. A `&mut self` method mutates that copy, which needs `&mut self`
         // on the wrapper too (pyo3 takes a mutable borrow of the Python object).
-        Some(if mutable {
-            InstanceAccess {
-                receiver: quote! { &mut self },
-                bind_inner: quote! { let __inner = &mut self.inner; },
-            }
-        } else {
-            InstanceAccess {
+        Some(match receiver {
+            InstanceReceiver::Ref => InstanceAccess {
                 receiver: quote! { &self },
                 bind_inner: quote! { let __inner = &self.inner; },
-            }
+                ctx_access: CtxAccess::None,
+            },
+            InstanceReceiver::RefMut => InstanceAccess {
+                receiver: quote! { &mut self },
+                bind_inner: quote! { let __inner = &mut self.inner; },
+                ctx_access: CtxAccess::None,
+            },
         })
     },
 };
