@@ -172,6 +172,35 @@ mod tests {
     }
 
     #[test]
+    fn instance_method_with_mut_ctx_param() {
+        // The receiver needs a shared `ctx`, the parameter a mutable one: mutable wins.
+        let item = quote! {
+            impl IntegerType {
+                pub fn bump(&self, ctx: &mut Context) -> u32 {
+                    todo!()
+                }
+            }
+        };
+        let ts = gen_type_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r##"
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyIntegerType {
+                fn bump(&self) -> ::pliron_python::pyo3::PyResult<u32> {
+                    let ctx = ::pliron_python::get_ctx_mut()?;
+                    let __inner = self.ptr.deref(ctx);
+                    let __result = __inner.bump(ctx);
+                    let __val = __result;
+                    Ok(__val)
+                }
+            }
+        "##]]
+        .assert_eq(&got);
+    }
+
+    #[test]
     fn mut_self_method() {
         let item = quote! {
             impl IntegerType {

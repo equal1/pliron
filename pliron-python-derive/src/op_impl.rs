@@ -156,4 +156,32 @@ mod tests {
         "##]]
         .assert_eq(&got);
     }
+
+    #[test]
+    fn mut_self_method_with_shared_ctx_param() {
+        // `&mut self` doesn't need `ctx`, so a `&Context` parameter fetches it shared.
+        let item = quote! {
+            impl ModuleOp {
+                pub fn rename(&mut self, ctx: &Context, name: String) {
+                    todo!()
+                }
+            }
+        };
+        let ts = gen_op_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r##"
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyModuleOp {
+                fn rename(&self, name: String) -> ::pliron_python::pyo3::PyResult<()> {
+                    let ctx = ::pliron_python::get_ctx()?;
+                    let mut __inner = <ModuleOp as ::pliron::op::Op>::from_operation(self.ptr);
+                    let __result = __inner.rename(ctx, name);
+                    Ok(())
+                }
+            }
+        "##]]
+        .assert_eq(&got);
+    }
 }

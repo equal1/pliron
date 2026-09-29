@@ -123,6 +123,53 @@ fn extract_self_type(ty: &Type, kind: &ImplKind) -> syn::Result<syn::Ident> {
     ))
 }
 
+/// How a wrapper obtains the active pliron `Context`, ordered from weakest to
+/// strongest so that the needs of a method's parts combine by taking the `max`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CtxAccess {
+    /// The context isn't needed.
+    None,
+    /// Fetched with `get_ctx()`.
+    Shared,
+    /// Fetched with `get_ctx_mut()`.
+    Mut,
+}
+
+impl CtxAccess {
+    /// What a `&Context` or `&mut Context` parameter of type `ty` needs.
+    fn of_context_param(ty: &Type) -> Self {
+        if is_mut_ref(ty) {
+            CtxAccess::Mut
+        } else {
+            CtxAccess::Shared
+        }
+    }
+
+    /// What the receiver needs: `Shared` for instance methods of a kind whose
+    /// instance access goes through `ctx`, `None` otherwise.
+    fn of_receiver(self_kind: &SelfKind, kind: &ImplKind) -> Self {
+        if kind.instance_needs_ctx && !matches!(self_kind, SelfKind::Static) {
+            CtxAccess::Shared
+        } else {
+            CtxAccess::None
+        }
+    }
+
+    /// The statement binding `ctx`, or nothing.
+    fn fetch(self) -> TokenStream {
+        match self {
+            CtxAccess::None => quote! {},
+            CtxAccess::Shared => quote! { let ctx = ::pliron_python::get_ctx()?; },
+            CtxAccess::Mut => quote! { let ctx = ::pliron_python::get_ctx_mut()?; },
+        }
+    }
+
+    /// Whether [`Self::fetch`] uses `?`, making the wrapper return `PyResult`.
+    fn is_fallible(self) -> bool {
+        self != CtxAccess::None
+    }
+}
+
 enum SelfKind {
     Ref,
     RefMut,
@@ -155,28 +202,19 @@ fn gen_py_method(
     let sig = &normalise_signature(sig, rust_ty);
     let method_name = &sig.ident;
     let self_kind = classify_self(sig);
-    let is_static = matches!(self_kind, SelfKind::Static);
 
     let ParamInfo {
         py_params,
         call_args,
-        uses_ctx,
-        uses_mut_ctx,
+        ctx_access: params_ctx_access,
     } = map_params(sig, kind)?;
-    let needs_ctx = uses_ctx || (kind.instance_needs_ctx && !is_static);
-
-    let ctx_inject = if uses_mut_ctx {
-        quote! { let ctx = ::pliron_python::get_ctx_mut()?; }
-    } else if needs_ctx {
-        quote! { let ctx = ::pliron_python::get_ctx()?; }
-    } else {
-        quote! {}
-    };
+    let ctx_access = params_ctx_access.max(CtxAccess::of_receiver(&self_kind, kind));
+    let ctx_inject = ctx_access.fetch();
 
     let ReturnInfo {
         py_ret_ty,
         wrap_result,
-    } = map_return_type(&sig.output, needs_ctx, kind)?;
+    } = map_return_type(&sig.output, ctx_access.is_fallible(), kind)?;
 
     let ReceiverInfo {
         static_attr,
@@ -283,10 +321,8 @@ struct ParamInfo {
     py_params: Vec<TokenStream>,
     /// The arguments passed to the Rust method, one per parameter.
     call_args: Vec<TokenStream>,
-    /// A `&Context` or `&mut Context` parameter is supplied from the active context.
-    uses_ctx: bool,
-    /// Some `Context` parameter is `&mut`, so the context must be fetched mutably.
-    uses_mut_ctx: bool,
+    /// What the `Context` parameters need: the strongest over all of them.
+    ctx_access: CtxAccess,
 }
 
 /// Map each non-`self` parameter of `sig` to its wrapper parameter (if any) and
@@ -296,8 +332,7 @@ fn map_params(sig: &Signature, kind: &ImplKind) -> syn::Result<ParamInfo> {
     let mut params = ParamInfo {
         py_params: Vec::new(),
         call_args: Vec::new(),
-        uses_ctx: false,
-        uses_mut_ctx: false,
+        ctx_access: CtxAccess::None,
     };
     let pymap = pymap_path();
 
@@ -308,8 +343,7 @@ fn map_params(sig: &Signature, kind: &ImplKind) -> syn::Result<ParamInfo> {
 
         match classify(param_ty) {
             Some(ParamKind::ContextParam) => {
-                params.uses_ctx = true;
-                params.uses_mut_ctx |= is_mut_ref(param_ty);
+                params.ctx_access = params.ctx_access.max(CtxAccess::of_context_param(param_ty));
                 params.call_args.push(quote! { ctx });
             }
             Some(ParamKind::Trivial) => {
@@ -335,8 +369,7 @@ fn map_params(sig: &Signature, kind: &ImplKind) -> syn::Result<ParamInfo> {
     Ok(params)
 }
 
-/// True for a `&mut T` reference type. Used to decide whether a `Context`
-/// parameter needs `get_ctx_mut()` rather than the shared `get_ctx()`.
+/// True for a `&mut T` reference type.
 fn is_mut_ref(ty: &Type) -> bool {
     matches!(ty, Type::Reference(r) if r.mutability.is_some())
 }
@@ -370,20 +403,16 @@ struct ReturnInfo {
 }
 
 /// Map the (normalised) Rust return type to the wrapper's return type and the
-/// statements converting `__result` into it. `always_pyresult` wraps
-/// non-`Result` returns in `PyResult` too, needed whenever the body uses `?`
-/// (e.g. to fetch `ctx`).
-fn map_return_type(
-    ret: &ReturnType,
-    always_pyresult: bool,
-    kind: &ImplKind,
-) -> syn::Result<ReturnInfo> {
+/// statements converting `__result` into it. When the wrapper is `fallible`
+/// (its body uses `?`, e.g. to fetch `ctx`), non-`Result` returns are wrapped
+/// in `PyResult` too.
+fn map_return_type(ret: &ReturnType, fallible: bool, kind: &ImplKind) -> syn::Result<ReturnInfo> {
     let ReturnType::Type(_, ty) = ret else {
         unreachable!("normalise_signature makes every return type explicit")
     };
 
     if is_unit(ty) {
-        return Ok(if always_pyresult {
+        return Ok(if fallible {
             ReturnInfo {
                 py_ret_ty: quote!(::pliron_python::pyo3::PyResult<()>),
                 wrap_result: quote! { Ok(()) },
@@ -409,7 +438,7 @@ fn map_return_type(
 
     let InnerReturn { py_ty, converter } = map_inner_return(ty, kind)?;
 
-    Ok(if always_pyresult {
+    Ok(if fallible {
         ReturnInfo {
             py_ret_ty: quote!(::pliron_python::pyo3::PyResult<#py_ty>),
             wrap_result: quote! { let __val = __result; Ok(#converter) },
