@@ -82,6 +82,55 @@ mod tests {
     }
 
     #[test]
+    fn explicit_unit_return_with_ctx() {
+        let item = quote! {
+            impl ModuleOp {
+                pub fn touch(&self, ctx: &Context) -> () {
+                    todo!()
+                }
+                pub fn check(&self, ctx: &Context) -> Result<()> {
+                    todo!()
+                }
+                pub fn try_new(ctx: &mut Context) -> Result<Self, Error> {
+                    todo!()
+                }
+            }
+        };
+        let ts = gen_op_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r##"
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyModuleOp {
+                fn touch(&self) -> ::pliron_python::pyo3::PyResult<()> {
+                    let ctx = ::pliron_python::get_ctx()?;
+                    let __inner = <ModuleOp as ::pliron::op::Op>::from_operation(self.ptr);
+                    let __result = __inner.touch(ctx);
+                    Ok(())
+                }
+                fn check(&self) -> ::pliron_python::pyo3::PyResult<()> {
+                    let ctx = ::pliron_python::get_ctx()?;
+                    let __inner = <ModuleOp as ::pliron::op::Op>::from_operation(self.ptr);
+                    let __result = __inner.check(ctx);
+                    __result.map(|__val| {}).map_err(::pliron_python::to_py_err)
+                }
+                #[staticmethod]
+                fn try_new() -> ::pliron_python::pyo3::PyResult<
+                    <ModuleOp as ::pliron_python::PyMap>::Owned,
+                > {
+                    let ctx = ::pliron_python::get_ctx_mut()?;
+                    let __result = ModuleOp::try_new(ctx);
+                    __result
+                        .map(|__val| { <ModuleOp as ::pliron_python::PyMap>::into_py(__val) })
+                        .map_err(::pliron_python::to_py_err)
+                }
+            }
+        "##]]
+        .assert_eq(&got);
+    }
+
+    #[test]
     fn mut_self_method() {
         let item = quote! {
             impl ModuleOp {

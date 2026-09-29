@@ -94,6 +94,84 @@ mod tests {
     }
 
     #[test]
+    fn explicit_unit_return() {
+        // Regression: an explicit `-> ()` in a fallible wrapper used to end in `Ok()`.
+        let item = quote! {
+            impl IntegerType {
+                pub fn f(&self) -> () {}
+            }
+        };
+        let ts = gen_type_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r##"
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyIntegerType {
+                fn f(&self) -> ::pliron_python::pyo3::PyResult<()> {
+                    let ctx = ::pliron_python::get_ctx()?;
+                    let __inner = self.ptr.deref(ctx);
+                    let __result = __inner.f();
+                    Ok(())
+                }
+            }
+        "##]]
+        .assert_eq(&got);
+    }
+
+    #[test]
+    fn self_in_result_and_vec() {
+        let item = quote! {
+            impl IntegerType {
+                pub fn try_get(ctx: &mut Context, width: u32) -> Result<TypedHandle<Self>> {
+                    todo!()
+                }
+                pub fn all(ctx: &Context, others: Vec<TypedHandle<Self>>) -> Vec<TypedHandle<Self>> {
+                    todo!()
+                }
+            }
+        };
+        let ts = gen_type_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r##"
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyIntegerType {
+                #[staticmethod]
+                fn try_get(
+                    width: u32,
+                ) -> ::pliron_python::pyo3::PyResult<
+                    <TypedHandle<IntegerType> as ::pliron_python::PyMap>::Owned,
+                > {
+                    let ctx = ::pliron_python::get_ctx_mut()?;
+                    let __result = IntegerType::try_get(ctx, width);
+                    __result
+                        .map(|__val| {
+                            <TypedHandle<IntegerType> as ::pliron_python::PyMap>::into_py(__val)
+                        })
+                        .map_err(::pliron_python::to_py_err)
+                }
+                #[staticmethod]
+                fn all(
+                    others: <Vec<TypedHandle<IntegerType>> as ::pliron_python::PyMap>::Borrowed<'_>,
+                ) -> ::pliron_python::pyo3::PyResult<
+                    <Vec<TypedHandle<IntegerType>> as ::pliron_python::PyMap>::Owned,
+                > {
+                    let ctx = ::pliron_python::get_ctx()?;
+                    let __result = IntegerType::all(
+                        ctx,
+                        <Vec<TypedHandle<IntegerType>> as ::pliron_python::PyMap>::from_py(others),
+                    );
+                    let __val = __result;
+                    Ok(<Vec<TypedHandle<IntegerType>> as ::pliron_python::PyMap>::into_py(__val))
+                }
+            }
+        "##]]
+        .assert_eq(&got);
+    }
+
+    #[test]
     fn mut_self_method() {
         let item = quote! {
             impl IntegerType {

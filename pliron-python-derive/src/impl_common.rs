@@ -5,7 +5,8 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    FnArg, ImplItem, ItemImpl, Pat, ReceiverKind, ReturnType, Signature, Type, Visibility, parse2,
+    FnArg, ImplItem, ItemImpl, Pat, ReceiverKind, ReturnType, Signature, Type, Visibility,
+    parse_quote, parse2,
 };
 
 use crate::py_type_mapper::{ParamKind, classify, pymap_path, substitute_self};
@@ -142,13 +143,16 @@ enum SelfKind {
 /// - converts the result with [`map_return_type`], returning `PyResult` when the
 ///   method returns `Result` or the wrapper uses `?` to fetch the context.
 ///
-/// `Self` in parameter and return types is replaced with `rust_ty`.
+/// The signature is first rewritten by [`normalise_signature`], so all later
+/// steps see concrete types and a single unit form.
+///
 /// Errors for parameters that aren't simple identifiers.
 fn gen_py_method(
     sig: &Signature,
     rust_ty: &syn::Ident,
     kind: &ImplKind,
 ) -> syn::Result<TokenStream> {
+    let sig = &normalise_signature(sig, rust_ty);
     let method_name = &sig.ident;
     let self_kind = classify_self(sig);
     let is_static = matches!(self_kind, SelfKind::Static);
@@ -158,7 +162,7 @@ fn gen_py_method(
         call_args,
         uses_ctx,
         uses_mut_ctx,
-    } = map_params(sig, rust_ty, kind)?;
+    } = map_params(sig, kind)?;
     let needs_ctx = uses_ctx || (kind.instance_needs_ctx && !is_static);
 
     let ctx_inject = if uses_mut_ctx {
@@ -172,7 +176,7 @@ fn gen_py_method(
     let ReturnInfo {
         py_ret_ty,
         wrap_result,
-    } = map_return_type(&sig.output, rust_ty, needs_ctx, kind)?;
+    } = map_return_type(&sig.output, needs_ctx, kind)?;
 
     let ReceiverInfo {
         static_attr,
@@ -190,6 +194,25 @@ fn gen_py_method(
             #wrap_result
         }
     })
+}
+
+/// A copy of `sig` with `Self` replaced by `rust_ty` in every parameter and
+/// return type, and an omitted return type made an explicit `-> ()`. The
+/// receiver is left as written.
+fn normalise_signature(sig: &Signature, rust_ty: &syn::Ident) -> Signature {
+    let mut sig = sig.clone();
+    for arg in &mut sig.inputs {
+        if let FnArg::Typed(pat_ty) = arg {
+            *pat_ty.ty = substitute_self(&pat_ty.ty, rust_ty);
+        }
+    }
+    sig.output = match &sig.output {
+        ReturnType::Default => parse_quote!(-> ()),
+        ReturnType::Type(arrow, ty) => {
+            ReturnType::Type(*arrow, Box::new(substitute_self(ty, rust_ty)))
+        }
+    };
+    sig
 }
 
 /// The receiver-dependent parts of a wrapper `fn`.
@@ -269,7 +292,7 @@ struct ParamInfo {
 /// Map each non-`self` parameter of `sig` to its wrapper parameter (if any) and
 /// the argument passed to the Rust method. `Context` parameters are dropped from
 /// the Python signature and receive `ctx` instead.
-fn map_params(sig: &Signature, rust_ty: &syn::Ident, kind: &ImplKind) -> syn::Result<ParamInfo> {
+fn map_params(sig: &Signature, kind: &ImplKind) -> syn::Result<ParamInfo> {
     let mut params = ParamInfo {
         py_params: Vec::new(),
         call_args: Vec::new(),
@@ -281,12 +304,12 @@ fn map_params(sig: &Signature, rust_ty: &syn::Ident, kind: &ImplKind) -> syn::Re
     for arg in &sig.inputs {
         let FnArg::Typed(pat_ty) = arg else { continue };
         let param_name = extract_pat_ident(&pat_ty.pat, kind)?;
-        let param_ty = substitute_self(&pat_ty.ty, rust_ty);
+        let param_ty = &*pat_ty.ty;
 
-        match classify(&param_ty) {
+        match classify(param_ty) {
             Some(ParamKind::ContextParam) => {
                 params.uses_ctx = true;
-                params.uses_mut_ctx |= is_mut_ref(&param_ty);
+                params.uses_mut_ctx |= is_mut_ref(param_ty);
                 params.call_args.push(quote! { ctx });
             }
             Some(ParamKind::Trivial) => {
@@ -346,16 +369,20 @@ struct ReturnInfo {
     wrap_result: TokenStream,
 }
 
-/// Map the Rust return type to the wrapper's return type and the statements
-/// converting `__result` into it. `always_pyresult` wraps non-`Result` returns
-/// in `PyResult` too, needed whenever the body uses `?` (e.g. to fetch `ctx`).
+/// Map the (normalised) Rust return type to the wrapper's return type and the
+/// statements converting `__result` into it. `always_pyresult` wraps
+/// non-`Result` returns in `PyResult` too, needed whenever the body uses `?`
+/// (e.g. to fetch `ctx`).
 fn map_return_type(
     ret: &ReturnType,
-    rust_ty: &syn::Ident,
     always_pyresult: bool,
     kind: &ImplKind,
 ) -> syn::Result<ReturnInfo> {
     let ReturnType::Type(_, ty) = ret else {
+        unreachable!("normalise_signature makes every return type explicit")
+    };
+
+    if is_unit(ty) {
         return Ok(if always_pyresult {
             ReturnInfo {
                 py_ret_ty: quote!(::pliron_python::pyo3::PyResult<()>),
@@ -371,8 +398,7 @@ fn map_return_type(
 
     // Result<T, E> → PyResult<<T as PyMap>::Owned> with map_err.
     if let Some(ok_ty) = extract_result_ok(ty) {
-        let ok_ty = substitute_self(ok_ty, rust_ty);
-        let InnerReturn { py_ty, converter } = map_inner_return(&ok_ty, kind)?;
+        let InnerReturn { py_ty, converter } = map_inner_return(ok_ty, kind)?;
         return Ok(ReturnInfo {
             py_ret_ty: quote!(::pliron_python::pyo3::PyResult<#py_ty>),
             wrap_result: quote! {
@@ -381,8 +407,7 @@ fn map_return_type(
         });
     }
 
-    let ty = substitute_self(ty, rust_ty);
-    let InnerReturn { py_ty, converter } = map_inner_return(&ty, kind)?;
+    let InnerReturn { py_ty, converter } = map_inner_return(ty, kind)?;
 
     Ok(if always_pyresult {
         ReturnInfo {
@@ -415,10 +440,8 @@ fn map_inner_return(ty: &Type, kind: &ImplKind) -> syn::Result<InnerReturn> {
         }),
         Some(ParamKind::PyMapped) => {
             // `()` is classified as PyMapped (it isn't recognized as primitive),
-            // so handle the unit case explicitly here.
-            if let Type::Tuple(tt) = ty
-                && tt.elems.is_empty()
-            {
+            // so handle the unit case explicitly here (reached for `Result<()>`).
+            if is_unit(ty) {
                 return Ok(InnerReturn {
                     py_ty: quote!(()),
                     converter: quote! {},
@@ -434,6 +457,10 @@ fn map_inner_return(ty: &Type, kind: &ImplKind) -> syn::Result<InnerReturn> {
             format!("{}: unsupported return shape", kind.macro_name),
         )),
     }
+}
+
+fn is_unit(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(tt) if tt.elems.is_empty())
 }
 
 fn extract_result_ok(ty: &Type) -> Option<&Type> {
