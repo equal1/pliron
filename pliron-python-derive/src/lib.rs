@@ -40,6 +40,7 @@
 mod attr_class;
 mod attr_impl;
 mod envelope;
+mod impl_common;
 mod op_class;
 mod op_impl;
 mod py_type_mapper;

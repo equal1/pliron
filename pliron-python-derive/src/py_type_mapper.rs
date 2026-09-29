@@ -131,32 +131,6 @@ pub(crate) fn substitute_self(ty: &Type, concrete: &syn::Ident) -> Type {
     }
 }
 
-/// True if the return type is `Self` or `Result<Self, _>` / `Result<Self>`.
-/// (Used by the macros to know when to emit `Self` substitutions.)
-pub(crate) fn return_mentions_self(ty: &Type) -> bool {
-    match ty {
-        Type::Path(tp) => {
-            if tp.path.is_ident("Self") {
-                return true;
-            }
-            tp.path.segments.iter().any(|seg| {
-                if let PathArguments::AngleBracketed(ab) = &seg.arguments {
-                    ab.args.iter().any(|a| {
-                        if let GenericArgument::Type(t) = a {
-                            return_mentions_self(t)
-                        } else {
-                            false
-                        }
-                    })
-                } else {
-                    false
-                }
-            })
-        }
-        _ => false,
-    }
-}
-
 /// The path `::pliron_python::PyMap` written out for `quote!` reuse.
 pub(crate) fn pymap_path() -> TokenStream {
     quote!(::pliron_python::PyMap)
