@@ -219,4 +219,59 @@ mod tests {
         "#]]
         .assert_eq(&got);
     }
+
+    #[test]
+    fn unsupported_param_pattern() {
+        let item = quote! {
+            impl IntegerType {
+                pub fn f(&self, (a, b): (u32, u32)) {}
+            }
+        };
+        let ts = gen_type_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r#"
+            ::core::compile_error! {
+                "py_type_impl: only simple identifier patterns are supported in function parameters"
+            }
+        "#]]
+        .assert_eq(&got);
+    }
+
+    #[test]
+    fn ctx_return() {
+        let item = quote! {
+            impl IntegerType {
+                pub fn f(ctx: &Context) -> &Context {
+                    ctx
+                }
+            }
+        };
+        let ts = gen_type_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r#"
+            ::core::compile_error! {
+                "py_type_impl: `&Context` cannot be a return type"
+            }
+        "#]]
+        .assert_eq(&got);
+    }
+
+    #[test]
+    fn non_path_self_type() {
+        let item = quote! {
+            impl &IntegerType {
+                pub fn width(&self) -> u32 {
+                    0
+                }
+            }
+        };
+        let err = gen_type_impl(item, false).unwrap_err();
+
+        expect!["py_type_impl requires a concrete type path (e.g. `impl MyType`)"]
+            .assert_eq(&err.to_string());
+    }
 }

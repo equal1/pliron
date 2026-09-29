@@ -3,7 +3,7 @@
 //! [`ImplKind`]; everything else is shared here.
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
     FnArg, ImplItem, ItemImpl, Pat, ReceiverKind, ReturnType, Signature, Type, Visibility,
     parse_quote, parse2,
@@ -72,10 +72,14 @@ pub(crate) fn gen_impl(
     let input = item.into();
     let item: ItemImpl = parse2(input.clone())?;
 
-    let rust_ty = extract_self_type(&item.self_ty, kind)?;
+    let rust_ty = extract_self_type(&item.self_ty, kind.macro_name)?;
     let py_ty_name = format_ident!("Py{}", rust_ty);
 
-    let PyMethods { methods, errors } = gen_py_methods(&item, &rust_ty, kind);
+    let analyser = Analyser {
+        kind,
+        rust_ty: &rust_ty,
+    };
+    let PyMethods { methods, errors } = gen_py_methods(&item, &analyser);
 
     let original = emit_original.then_some(input);
     let py_block = (!methods.is_empty()).then(|| {
@@ -109,7 +113,8 @@ struct PyMethods {
 /// Generate a Python wrapper for every `pub` fn of `item`, collecting the
 /// wrappers and the per-method errors separately (see [`PyMethods`]). Non-`pub`
 /// fns and other impl items (consts, types, macros) are skipped.
-fn gen_py_methods(item: &ItemImpl, rust_ty: &syn::Ident, kind: &ImplKind) -> PyMethods {
+fn gen_py_methods(item: &ItemImpl, analyser: &Analyser) -> PyMethods {
+    let rust_ty = analyser.rust_ty;
     let mut py_methods = PyMethods {
         methods: Vec::new(),
         errors: Vec::new(),
@@ -119,7 +124,7 @@ fn gen_py_methods(item: &ItemImpl, rust_ty: &syn::Ident, kind: &ImplKind) -> PyM
         _ => None,
     }) {
         let sig = normalise_signature(&method.sig, rust_ty);
-        match analyse_method(&sig, rust_ty, kind) {
+        match analyser.analyse_method(&sig) {
             Ok(desc) => py_methods.methods.push(emit_method(&desc, rust_ty)),
             Err(e) => py_methods.errors.push(e.into_compile_error()),
         }
@@ -129,8 +134,9 @@ fn gen_py_methods(item: &ItemImpl, rust_ty: &syn::Ident, kind: &ImplKind) -> PyM
 
 /// The name of the type an `impl` block is for: the last path segment, so
 /// `impl foo::MyAttr` yields `MyAttr`. The Python wrapper is named `Py` + this.
-/// Errors for anything other than a type path (e.g. `impl &MyAttr`).
-fn extract_self_type(ty: &Type, kind: &ImplKind) -> syn::Result<syn::Ident> {
+/// Errors for anything other than a type path (e.g. `impl &MyAttr`), naming
+/// `macro_name`.
+fn extract_self_type(ty: &Type, macro_name: &str) -> syn::Result<syn::Ident> {
     if let Type::Path(tp) = ty
         && let Some(last) = tp.path.segments.last()
     {
@@ -138,15 +144,12 @@ fn extract_self_type(ty: &Type, kind: &ImplKind) -> syn::Result<syn::Ident> {
     }
     Err(syn::Error::new_spanned(
         ty,
-        format!(
-            "{} requires a concrete type path (e.g. `impl MyType`)",
-            kind.macro_name
-        ),
+        format!("{macro_name} requires a concrete type path (e.g. `impl MyType`)"),
     ))
 }
 
-/// What the generator knows about one Rust method, gathered by [`analyse_method`]
-/// and turned into a wrapper by [`emit_method`].
+/// What the generator knows about one Rust method, gathered by
+/// [`Analyser::analyse_method`] and turned into a wrapper by [`emit_method`].
 #[derive(Debug)]
 struct MethodDesc {
     /// The Rust method's name, also used for the wrapper.
@@ -239,32 +242,6 @@ impl CtxAccess {
     }
 }
 
-/// Describe the Rust method with the normalised signature `sig` (see
-/// [`normalise_signature`]).
-///
-/// Errors for parameters that aren't simple identifiers, `&Context` returns,
-/// and receivers that `kind` can't wrap.
-fn analyse_method(
-    sig: &Signature,
-    rust_ty: &syn::Ident,
-    kind: &ImplKind,
-) -> syn::Result<MethodDesc> {
-    let params = analyse_params(sig, kind)?;
-    let ret = analyse_return(&sig.output, kind)?;
-    let receiver = analyse_receiver(sig, rust_ty, kind)?;
-    let ctx_access = params
-        .iter()
-        .map(CtxAccess::of_param)
-        .fold(CtxAccess::of_receiver(&receiver), CtxAccess::max);
-    Ok(MethodDesc {
-        name: sig.ident.clone(),
-        receiver,
-        params,
-        ctx_access,
-        ret,
-    })
-}
-
 /// A copy of `sig` with `Self` replaced by `rust_ty` in every parameter and
 /// return type, and an omitted return type made an explicit `-> ()`. The
 /// receiver is left as written.
@@ -284,115 +261,134 @@ fn normalise_signature(sig: &Signature, rust_ty: &syn::Ident) -> Signature {
     sig
 }
 
-/// Describe the receiver, reached per [`ImplKind::instance_access`]. Errors
-/// when the kind rejects it.
-fn analyse_receiver(
-    sig: &Signature,
-    rust_ty: &syn::Ident,
-    kind: &ImplKind,
-) -> syn::Result<Receiver> {
-    let Some(receiver) = sig.receiver() else {
-        return Ok(Receiver::Static);
-    };
-    // `Receiver::mutability` is the `mut` of `mut self`; the `mut` of
-    // `&mut self` lives in the reference kind.
-    let instance_receiver = match receiver.kind {
-        ReceiverKind::Reference(_, _, Some(_)) => InstanceReceiver::RefMut,
-        _ => InstanceReceiver::Ref,
-    };
-    let access = (kind.instance_access)(rust_ty, instance_receiver).ok_or_else(|| {
-        syn::Error::new_spanned(
-            receiver,
-            format!(
-                "{}: `{}` methods are not supported",
-                kind.macro_name,
-                instance_receiver.as_str()
-            ),
-        )
-    })?;
-    Ok(Receiver::Instance(access))
+/// The analysis phase for the methods of one `impl` block: turns normalised
+/// signatures into [`MethodDesc`]s and reports every per-method error.
+struct Analyser<'a> {
+    kind: &'a ImplKind,
+    /// The Rust self type of the `impl` block.
+    rust_ty: &'a syn::Ident,
 }
 
-/// Describe each non-`self` parameter of `sig`. Errors for parameters that
-/// aren't simple identifiers.
-fn analyse_params(sig: &Signature, kind: &ImplKind) -> syn::Result<Vec<Param>> {
-    let mut params = Vec::new();
-    for arg in &sig.inputs {
-        let FnArg::Typed(pat_ty) = arg else { continue };
-        let name = extract_pat_ident(&pat_ty.pat, kind)?;
-        let ty = &*pat_ty.ty;
-        let Some(param_kind) = classify(ty) else {
-            return Err(syn::Error::new_spanned(
-                ty,
-                format!("{}: unsupported parameter shape", kind.macro_name),
-            ));
-        };
-        params.push(Param {
-            name: name.clone(),
-            ty: ty.clone(),
-            kind: param_kind,
-        });
+impl Analyser<'_> {
+    /// An error spanning `tokens`, with the macro name in front of `message`.
+    fn error(&self, tokens: impl ToTokens, message: impl std::fmt::Display) -> syn::Error {
+        syn::Error::new_spanned(tokens, format!("{}: {message}", self.kind.macro_name))
     }
-    Ok(params)
+
+    /// Describe the Rust method with the normalised signature `sig` (see
+    /// [`normalise_signature`]).
+    ///
+    /// Errors for parameters that aren't simple identifiers, `&Context` returns,
+    /// and receivers that the kind can't wrap.
+    fn analyse_method(&self, sig: &Signature) -> syn::Result<MethodDesc> {
+        let params = self.analyse_params(sig)?;
+        let ret = self.analyse_return(&sig.output)?;
+        let receiver = self.analyse_receiver(sig)?;
+        let ctx_access = params
+            .iter()
+            .map(CtxAccess::of_param)
+            .fold(CtxAccess::of_receiver(&receiver), CtxAccess::max);
+        Ok(MethodDesc {
+            name: sig.ident.clone(),
+            receiver,
+            params,
+            ctx_access,
+            ret,
+        })
+    }
+
+    /// Describe the receiver, reached per [`ImplKind::instance_access`]. Errors
+    /// when the kind rejects it.
+    fn analyse_receiver(&self, sig: &Signature) -> syn::Result<Receiver> {
+        let Some(receiver) = sig.receiver() else {
+            return Ok(Receiver::Static);
+        };
+        // `Receiver::mutability` is the `mut` of `mut self`; the `mut` of
+        // `&mut self` lives in the reference kind.
+        let instance_receiver = match receiver.kind {
+            ReceiverKind::Reference(_, _, Some(_)) => InstanceReceiver::RefMut,
+            _ => InstanceReceiver::Ref,
+        };
+        let access =
+            (self.kind.instance_access)(self.rust_ty, instance_receiver).ok_or_else(|| {
+                self.error(
+                    receiver,
+                    format_args!("`{}` methods are not supported", instance_receiver.as_str()),
+                )
+            })?;
+        Ok(Receiver::Instance(access))
+    }
+
+    /// Describe each non-`self` parameter of `sig`. Errors for parameters that
+    /// aren't simple identifiers.
+    fn analyse_params(&self, sig: &Signature) -> syn::Result<Vec<Param>> {
+        let mut params = Vec::new();
+        for arg in &sig.inputs {
+            let FnArg::Typed(pat_ty) = arg else { continue };
+            let name = self.extract_pat_ident(&pat_ty.pat)?;
+            let ty = &*pat_ty.ty;
+            let Some(param_kind) = classify(ty) else {
+                return Err(self.error(ty, "unsupported parameter shape"));
+            };
+            params.push(Param {
+                name: name.clone(),
+                ty: ty.clone(),
+                kind: param_kind,
+            });
+        }
+        Ok(params)
+    }
+
+    /// The identifier bound by a parameter pattern. Errors for any other pattern.
+    fn extract_pat_ident<'p>(&self, pat: &'p Pat) -> syn::Result<&'p syn::Ident> {
+        if let Pat::Ident(pi) = pat {
+            return Ok(&pi.ident);
+        }
+        Err(self.error(
+            pat,
+            "only simple identifier patterns are supported in function parameters",
+        ))
+    }
+
+    /// Describe the (normalised) Rust return type. Errors for `&Context` returns.
+    fn analyse_return(&self, ret: &ReturnType) -> syn::Result<Return> {
+        let ReturnType::Type(_, ty) = ret else {
+            unreachable!("normalise_signature makes every return type explicit")
+        };
+        Ok(match extract_result_ok(ty) {
+            Some(ok_ty) => Return {
+                value: self.analyse_return_value(ok_ty)?,
+                in_result: true,
+            },
+            None => Return {
+                value: self.analyse_return_value(ty)?,
+                in_result: false,
+            },
+        })
+    }
+
+    /// Describe a returned value (the `Ok` type of a `Result`, or the whole
+    /// return type). Errors for `&Context` and types that can't be converted.
+    fn analyse_return_value(&self, ty: &Type) -> syn::Result<ReturnValue> {
+        // `()` would classify as PyMapped (it isn't recognized as primitive).
+        if is_unit(ty) {
+            return Ok(ReturnValue::Unit);
+        }
+        let value_kind = match classify(ty) {
+            Some(ParamKind::ContextParam) => {
+                return Err(self.error(ty, "`&Context` cannot be a return type"));
+            }
+            Some(ParamKind::Trivial) => ValueKind::Trivial,
+            Some(ParamKind::PyMapped) => ValueKind::PyMapped,
+            None => return Err(self.error(ty, "unsupported return shape")),
+        };
+        Ok(ReturnValue::Value(value_kind, Box::new(ty.clone())))
+    }
 }
 
 /// True for a `&mut T` reference type.
 fn is_mut_ref(ty: &Type) -> bool {
     matches!(ty, Type::Reference(r) if r.mutability.is_some())
-}
-
-fn extract_pat_ident<'a>(pat: &'a Pat, kind: &ImplKind) -> syn::Result<&'a syn::Ident> {
-    if let Pat::Ident(pi) = pat {
-        return Ok(&pi.ident);
-    }
-    Err(syn::Error::new_spanned(
-        pat,
-        format!(
-            "{}: only simple identifier patterns are supported in function parameters",
-            kind.macro_name
-        ),
-    ))
-}
-
-/// Describe the (normalised) Rust return type. Errors for `&Context` returns.
-fn analyse_return(ret: &ReturnType, kind: &ImplKind) -> syn::Result<Return> {
-    let ReturnType::Type(_, ty) = ret else {
-        unreachable!("normalise_signature makes every return type explicit")
-    };
-    Ok(match extract_result_ok(ty) {
-        Some(ok_ty) => Return {
-            value: analyse_return_value(ok_ty, kind)?,
-            in_result: true,
-        },
-        None => Return {
-            value: analyse_return_value(ty, kind)?,
-            in_result: false,
-        },
-    })
-}
-
-fn analyse_return_value(ty: &Type, kind: &ImplKind) -> syn::Result<ReturnValue> {
-    // `()` would classify as PyMapped (it isn't recognized as primitive).
-    if is_unit(ty) {
-        return Ok(ReturnValue::Unit);
-    }
-    let value_kind = match classify(ty) {
-        Some(ParamKind::ContextParam) => {
-            return Err(syn::Error::new_spanned(
-                ty,
-                format!("{}: `&Context` cannot be a return type", kind.macro_name),
-            ));
-        }
-        Some(ParamKind::Trivial) => ValueKind::Trivial,
-        Some(ParamKind::PyMapped) => ValueKind::PyMapped,
-        None => {
-            return Err(syn::Error::new_spanned(
-                ty,
-                format!("{}: unsupported return shape", kind.macro_name),
-            ));
-        }
-    };
-    Ok(ReturnValue::Value(value_kind, Box::new(ty.clone())))
 }
 
 fn is_unit(ty: &Type) -> bool {
