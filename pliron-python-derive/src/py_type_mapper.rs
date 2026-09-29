@@ -10,6 +10,7 @@ use quote::quote;
 use syn::{GenericArgument, PathArguments, Type};
 
 /// How a Rust type is treated when generating a Python wrapper.
+#[derive(Debug)]
 pub(crate) enum ParamKind {
     /// `&Context` or `&mut Context`. The macro drops this from the Python
     /// signature and supplies it from the thread-local active context.

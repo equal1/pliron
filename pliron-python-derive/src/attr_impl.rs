@@ -114,4 +114,78 @@ mod tests {
         "##]]
         .assert_eq(&got);
     }
+
+    #[test]
+    fn result_returns_without_ctx() {
+        // No `ctx` is fetched, so only the `Result` makes these wrappers fallible.
+        let item = quote! {
+            impl StringAttr {
+                pub fn parse(value: String) -> Result<Self> {
+                    todo!()
+                }
+                pub fn validate(&self) -> Result<()> {
+                    todo!()
+                }
+            }
+        };
+        let ts = gen_attr_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r##"
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyStringAttr {
+                #[staticmethod]
+                fn parse(
+                    value: String,
+                ) -> ::pliron_python::pyo3::PyResult<<StringAttr as ::pliron_python::PyMap>::Owned> {
+                    let __result = StringAttr::parse(value);
+                    __result
+                        .map(|__val| { <StringAttr as ::pliron_python::PyMap>::into_py(__val) })
+                        .map_err(::pliron_python::to_py_err)
+                }
+                fn validate(&self) -> ::pliron_python::pyo3::PyResult<()> {
+                    let __inner = &self.inner;
+                    let __result = __inner.validate();
+                    __result.map(|__val| {}).map_err(::pliron_python::to_py_err)
+                }
+            }
+        "##]]
+        .assert_eq(&got);
+    }
+
+    #[test]
+    fn one_method_fails() {
+        // The error is emitted outside the `#[pymethods]` block and the valid
+        // method is still wrapped.
+        let item = quote! {
+            impl StringAttr {
+                pub fn pair(&self, (a, b): (u32, u32)) -> u32 {
+                    a + b
+                }
+                pub fn len(&self) -> usize {
+                    self.0.len()
+                }
+            }
+        };
+        let ts = gen_attr_impl(item, false).unwrap();
+        let f = syn::parse2::<syn::File>(ts).unwrap();
+        let got = prettyplease::unparse(&f);
+
+        expect![[r#"
+            ::core::compile_error! {
+                "py_attr_impl: only simple identifier patterns are supported in function parameters"
+            }
+            #[::pliron_python::pyo3::pymethods(crate = "::pliron_python::pyo3")]
+            impl PyStringAttr {
+                fn len(&self) -> usize {
+                    let __inner = &self.inner;
+                    let __result = __inner.len();
+                    let __val = __result;
+                    __val
+                }
+            }
+        "#]]
+        .assert_eq(&got);
+    }
 }

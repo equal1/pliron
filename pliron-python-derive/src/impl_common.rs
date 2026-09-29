@@ -24,6 +24,7 @@ pub(crate) struct ImplKind {
 }
 
 /// How an instance method's wrapper reaches the Rust value it calls the method on.
+#[derive(Debug)]
 pub(crate) struct InstanceAccess {
     /// The wrapper's receiver: `&self` or `&mut self`.
     pub receiver: TokenStream,
@@ -97,8 +98,9 @@ fn gen_py_methods(item: &ItemImpl, rust_ty: &syn::Ident, kind: &ImplKind) -> PyM
         ImplItem::Fn(method) if matches!(method.vis, Visibility::Public(_)) => Some(method),
         _ => None,
     }) {
-        match gen_py_method(&method.sig, rust_ty, kind) {
-            Ok(ts) => py_methods.methods.push(ts),
+        let sig = normalise_signature(&method.sig, rust_ty);
+        match analyse_method(&sig, rust_ty, kind) {
+            Ok(desc) => py_methods.methods.push(emit_method(&desc, rust_ty)),
             Err(e) => py_methods.errors.push(e.into_compile_error()),
         }
     }
@@ -123,9 +125,72 @@ fn extract_self_type(ty: &Type, kind: &ImplKind) -> syn::Result<syn::Ident> {
     ))
 }
 
+/// What the generator knows about one Rust method, gathered by [`analyse_method`]
+/// and turned into a wrapper by [`emit_method`].
+#[derive(Debug)]
+struct MethodDesc {
+    /// The Rust method's name, also used for the wrapper.
+    name: syn::Ident,
+    /// How the wrapper receives `self`.
+    receiver: Receiver,
+    /// The non-`self` parameters, in order.
+    params: Vec<Param>,
+    /// How the wrapper gets the context: the strongest need of the parameters
+    /// and the receiver.
+    ctx_access: CtxAccess,
+    /// What the Rust method returns.
+    ret: Return,
+}
+
+/// How a wrapper receives `self`.
+#[derive(Debug)]
+enum Receiver {
+    /// No receiver: the wrapper is a `#[staticmethod]`.
+    Static,
+    /// `&self` (or `self`), reached as the [`ImplKind`] says.
+    Shared(InstanceAccess),
+    /// `&mut self`, reached as the [`ImplKind`] says.
+    Mut(InstanceAccess),
+}
+
+/// One non-`self` parameter of the Rust method.
+#[derive(Debug)]
+struct Param {
+    name: syn::Ident,
+    /// The parameter type, with `Self` replaced.
+    ty: Type,
+    kind: ParamKind,
+}
+
+/// What a Rust method returns.
+#[derive(Debug)]
+struct Return {
+    /// The returned value, or the `Ok` value when [`Self::in_result`].
+    value: ReturnValue,
+    /// Whether the method returns `Result<value, _>`.
+    in_result: bool,
+}
+
+#[derive(Debug)]
+enum ReturnValue {
+    /// `()`.
+    Unit,
+    /// Any other type.
+    Value(ValueKind, Box<Type>),
+}
+
+/// How a returned value is converted to Python.
+#[derive(Debug)]
+enum ValueKind {
+    /// pyo3 handles it natively: returned as-is.
+    Trivial,
+    /// Converted with `PyMap::into_py`.
+    PyMapped,
+}
+
 /// How a wrapper obtains the active pliron `Context`, ordered from weakest to
 /// strongest so that the needs of a method's parts combine by taking the `max`.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CtxAccess {
     /// The context isn't needed.
     None,
@@ -136,101 +201,50 @@ enum CtxAccess {
 }
 
 impl CtxAccess {
-    /// What a `&Context` or `&mut Context` parameter of type `ty` needs.
-    fn of_context_param(ty: &Type) -> Self {
-        if is_mut_ref(ty) {
-            CtxAccess::Mut
-        } else {
-            CtxAccess::Shared
+    /// What a parameter needs: `Mut` for `&mut Context`, `Shared` for
+    /// `&Context`, `None` for anything else.
+    fn of_param(param: &Param) -> Self {
+        match param.kind {
+            ParamKind::ContextParam if is_mut_ref(&param.ty) => CtxAccess::Mut,
+            ParamKind::ContextParam => CtxAccess::Shared,
+            ParamKind::Trivial | ParamKind::PyMapped => CtxAccess::None,
         }
     }
 
     /// What the receiver needs: `Shared` for instance methods of a kind whose
     /// instance access goes through `ctx`, `None` otherwise.
-    fn of_receiver(self_kind: &SelfKind, kind: &ImplKind) -> Self {
-        if kind.instance_needs_ctx && !matches!(self_kind, SelfKind::Static) {
+    fn of_receiver(receiver: &Receiver, kind: &ImplKind) -> Self {
+        if kind.instance_needs_ctx && !matches!(receiver, Receiver::Static) {
             CtxAccess::Shared
         } else {
             CtxAccess::None
         }
     }
-
-    /// The statement binding `ctx`, or nothing.
-    fn fetch(self) -> TokenStream {
-        match self {
-            CtxAccess::None => quote! {},
-            CtxAccess::Shared => quote! { let ctx = ::pliron_python::get_ctx()?; },
-            CtxAccess::Mut => quote! { let ctx = ::pliron_python::get_ctx_mut()?; },
-        }
-    }
-
-    /// Whether [`Self::fetch`] uses `?`, making the wrapper return `PyResult`.
-    fn is_fallible(self) -> bool {
-        self != CtxAccess::None
-    }
 }
 
-enum SelfKind {
-    Ref,
-    RefMut,
-    Static,
-}
-
-/// Generate the Python wrapper `fn` for one Rust method with signature `sig`.
+/// Describe the Rust method with the normalised signature `sig` (see
+/// [`normalise_signature`]).
 ///
-/// The wrapper:
-/// - takes `&self` or `&mut self` for instance methods (per [`ImplKind::instance_access`]),
-///   and is a `#[staticmethod]` otherwise;
-/// - drops `&Context` / `&mut Context` parameters from the Python signature and
-///   fetches the active context instead (`get_ctx()` or `get_ctx_mut()`);
-/// - takes other parameters as-is when pyo3 handles them natively, or through
-///   `PyMap::Borrowed` otherwise;
-/// - binds `__inner` as [`ImplKind::instance_access`] says and calls the method
-///   on it; the receiver mutability is handled there too, or rejected;
-/// - converts the result with [`map_return_type`], returning `PyResult` when the
-///   method returns `Result` or the wrapper uses `?` to fetch the context.
-///
-/// The signature is first rewritten by [`normalise_signature`], so all later
-/// steps see concrete types and a single unit form.
-///
-/// Errors for parameters that aren't simple identifiers.
-fn gen_py_method(
+/// Errors for parameters that aren't simple identifiers, `&Context` returns,
+/// and receivers that `kind` can't wrap.
+fn analyse_method(
     sig: &Signature,
     rust_ty: &syn::Ident,
     kind: &ImplKind,
-) -> syn::Result<TokenStream> {
-    let sig = &normalise_signature(sig, rust_ty);
-    let method_name = &sig.ident;
-    let self_kind = classify_self(sig);
-
-    let ParamInfo {
-        py_params,
-        call_args,
-        ctx_access: params_ctx_access,
-    } = map_params(sig, kind)?;
-    let ctx_access = params_ctx_access.max(CtxAccess::of_receiver(&self_kind, kind));
-    let ctx_inject = ctx_access.fetch();
-
-    let ReturnInfo {
-        py_ret_ty,
-        wrap_result,
-    } = map_return_type(&sig.output, ctx_access.is_fallible(), kind)?;
-
-    let ReceiverInfo {
-        static_attr,
-        self_param,
-        bind_inner,
-        call_expr,
-    } = map_receiver(sig, self_kind, rust_ty, &call_args, kind)?;
-
-    Ok(quote! {
-        #static_attr
-        fn #method_name(#self_param #(#py_params),*) -> #py_ret_ty {
-            #ctx_inject
-            #bind_inner
-            let __result = #call_expr;
-            #wrap_result
-        }
+) -> syn::Result<MethodDesc> {
+    let params = analyse_params(sig, kind)?;
+    let ret = analyse_return(&sig.output, kind)?;
+    let receiver = analyse_receiver(sig, rust_ty, kind)?;
+    let ctx_access = params
+        .iter()
+        .map(CtxAccess::of_param)
+        .fold(CtxAccess::of_receiver(&receiver, kind), CtxAccess::max);
+    Ok(MethodDesc {
+        name: sig.ident.clone(),
+        receiver,
+        params,
+        ctx_access,
+        ret,
     })
 }
 
@@ -253,118 +267,55 @@ fn normalise_signature(sig: &Signature, rust_ty: &syn::Ident) -> Signature {
     sig
 }
 
-/// The receiver-dependent parts of a wrapper `fn`.
-struct ReceiverInfo {
-    /// `#[staticmethod]` for methods without a receiver, empty otherwise.
-    static_attr: TokenStream,
-    /// The wrapper's receiver followed by a comma (`&self,` / `&mut self,`), or empty.
-    self_param: TokenStream,
-    /// The statement binding `__inner` for instance methods, or empty.
-    bind_inner: TokenStream,
-    /// The call of the Rust method, on `__inner` or on the type.
-    call_expr: TokenStream,
-}
-
-/// Decide how the wrapper receives `self` and calls the Rust method with
-/// `call_args`: as a `#[staticmethod]` calling `rust_ty::method(..)`, or as an
-/// instance method calling `__inner.method(..)` bound per
-/// [`ImplKind::instance_access`]. Errors when the kind rejects the receiver.
-fn map_receiver(
+/// Describe the receiver, reached per [`ImplKind::instance_access`]. Errors
+/// when the kind rejects it.
+fn analyse_receiver(
     sig: &Signature,
-    self_kind: SelfKind,
     rust_ty: &syn::Ident,
-    call_args: &[TokenStream],
     kind: &ImplKind,
-) -> syn::Result<ReceiverInfo> {
-    let method_name = &sig.ident;
-    let unsupported = |receiver: &str| {
+) -> syn::Result<Receiver> {
+    let Some(receiver) = sig.receiver() else {
+        return Ok(Receiver::Static);
+    };
+    // `Receiver::mutability` is the `mut` of `mut self`; the `mut` of
+    // `&mut self` lives in the reference kind.
+    let mutable = matches!(receiver.kind, ReceiverKind::Reference(_, _, Some(_)));
+    let access = (kind.instance_access)(rust_ty, mutable).ok_or_else(|| {
         syn::Error::new_spanned(
-            sig.receiver(),
+            receiver,
             format!(
-                "{}: `{receiver}` methods are not supported",
-                kind.macro_name
+                "{}: `{}` methods are not supported",
+                kind.macro_name,
+                if mutable { "&mut self" } else { "&self" }
             ),
         )
-    };
-    let access = match self_kind {
-        SelfKind::Static => None,
-        SelfKind::Ref => {
-            Some((kind.instance_access)(rust_ty, false).ok_or_else(|| unsupported("&self"))?)
-        }
-        SelfKind::RefMut => {
-            Some((kind.instance_access)(rust_ty, true).ok_or_else(|| unsupported("&mut self"))?)
-        }
-    };
-
-    Ok(match access {
-        None => ReceiverInfo {
-            static_attr: quote! { #[staticmethod] },
-            self_param: quote! {},
-            bind_inner: quote! {},
-            call_expr: quote! { #rust_ty::#method_name(#(#call_args),*) },
-        },
-        Some(InstanceAccess {
-            receiver,
-            bind_inner,
-        }) => ReceiverInfo {
-            static_attr: quote! {},
-            self_param: quote! { #receiver, },
-            bind_inner,
-            call_expr: quote! { __inner.#method_name(#(#call_args),*) },
-        },
+    })?;
+    Ok(if mutable {
+        Receiver::Mut(access)
+    } else {
+        Receiver::Shared(access)
     })
 }
 
-/// The wrapper-side view of a Rust method's non-`self` parameters.
-struct ParamInfo {
-    /// The Python-visible parameters of the wrapper (`name: Ty`).
-    py_params: Vec<TokenStream>,
-    /// The arguments passed to the Rust method, one per parameter.
-    call_args: Vec<TokenStream>,
-    /// What the `Context` parameters need: the strongest over all of them.
-    ctx_access: CtxAccess,
-}
-
-/// Map each non-`self` parameter of `sig` to its wrapper parameter (if any) and
-/// the argument passed to the Rust method. `Context` parameters are dropped from
-/// the Python signature and receive `ctx` instead.
-fn map_params(sig: &Signature, kind: &ImplKind) -> syn::Result<ParamInfo> {
-    let mut params = ParamInfo {
-        py_params: Vec::new(),
-        call_args: Vec::new(),
-        ctx_access: CtxAccess::None,
-    };
-    let pymap = pymap_path();
-
+/// Describe each non-`self` parameter of `sig`. Errors for parameters that
+/// aren't simple identifiers.
+fn analyse_params(sig: &Signature, kind: &ImplKind) -> syn::Result<Vec<Param>> {
+    let mut params = Vec::new();
     for arg in &sig.inputs {
         let FnArg::Typed(pat_ty) = arg else { continue };
-        let param_name = extract_pat_ident(&pat_ty.pat, kind)?;
-        let param_ty = &*pat_ty.ty;
-
-        match classify(param_ty) {
-            Some(ParamKind::ContextParam) => {
-                params.ctx_access = params.ctx_access.max(CtxAccess::of_context_param(param_ty));
-                params.call_args.push(quote! { ctx });
-            }
-            Some(ParamKind::Trivial) => {
-                params.py_params.push(quote! { #param_name: #param_ty });
-                params.call_args.push(quote! { #param_name });
-            }
-            Some(ParamKind::PyMapped) => {
-                params.py_params.push(quote! {
-                    #param_name: <#param_ty as #pymap>::Borrowed<'_>
-                });
-                params.call_args.push(quote! {
-                    <#param_ty as #pymap>::from_py(#param_name)
-                });
-            }
-            None => {
-                return Err(syn::Error::new_spanned(
-                    &pat_ty.ty,
-                    format!("{}: unsupported parameter shape", kind.macro_name),
-                ));
-            }
-        }
+        let name = extract_pat_ident(&pat_ty.pat, kind)?;
+        let ty = &*pat_ty.ty;
+        let Some(param_kind) = classify(ty) else {
+            return Err(syn::Error::new_spanned(
+                ty,
+                format!("{}: unsupported parameter shape", kind.macro_name),
+            ));
+        };
+        params.push(Param {
+            name: name.clone(),
+            ty: ty.clone(),
+            kind: param_kind,
+        });
     }
     Ok(params)
 }
@@ -372,16 +323,6 @@ fn map_params(sig: &Signature, kind: &ImplKind) -> syn::Result<ParamInfo> {
 /// True for a `&mut T` reference type.
 fn is_mut_ref(ty: &Type) -> bool {
     matches!(ty, Type::Reference(r) if r.mutability.is_some())
-}
-
-fn classify_self(sig: &Signature) -> SelfKind {
-    match sig.receiver() {
-        // `Receiver::mutability` is the `mut` of `mut self`; the `mut` of
-        // `&mut self` lives in the reference kind.
-        Some(r) if matches!(r.kind, ReceiverKind::Reference(_, _, Some(_))) => SelfKind::RefMut,
-        Some(_) => SelfKind::Ref,
-        None => SelfKind::Static,
-    }
 }
 
 fn extract_pat_ident<'a>(pat: &'a Pat, kind: &ImplKind) -> syn::Result<&'a syn::Ident> {
@@ -397,95 +338,45 @@ fn extract_pat_ident<'a>(pat: &'a Pat, kind: &ImplKind) -> syn::Result<&'a syn::
     ))
 }
 
-struct ReturnInfo {
-    py_ret_ty: TokenStream,
-    wrap_result: TokenStream,
-}
-
-/// Map the (normalised) Rust return type to the wrapper's return type and the
-/// statements converting `__result` into it. When the wrapper is `fallible`
-/// (its body uses `?`, e.g. to fetch `ctx`), non-`Result` returns are wrapped
-/// in `PyResult` too.
-fn map_return_type(ret: &ReturnType, fallible: bool, kind: &ImplKind) -> syn::Result<ReturnInfo> {
+/// Describe the (normalised) Rust return type. Errors for `&Context` returns.
+fn analyse_return(ret: &ReturnType, kind: &ImplKind) -> syn::Result<Return> {
     let ReturnType::Type(_, ty) = ret else {
         unreachable!("normalise_signature makes every return type explicit")
     };
-
-    if is_unit(ty) {
-        return Ok(if fallible {
-            ReturnInfo {
-                py_ret_ty: quote!(::pliron_python::pyo3::PyResult<()>),
-                wrap_result: quote! { Ok(()) },
-            }
-        } else {
-            ReturnInfo {
-                py_ret_ty: quote!(()),
-                wrap_result: quote! {},
-            }
-        });
-    };
-
-    // Result<T, E> → PyResult<<T as PyMap>::Owned> with map_err.
-    if let Some(ok_ty) = extract_result_ok(ty) {
-        let InnerReturn { py_ty, converter } = map_inner_return(ok_ty, kind)?;
-        return Ok(ReturnInfo {
-            py_ret_ty: quote!(::pliron_python::pyo3::PyResult<#py_ty>),
-            wrap_result: quote! {
-                __result.map(|__val| { #converter }).map_err(::pliron_python::to_py_err)
-            },
-        });
-    }
-
-    let InnerReturn { py_ty, converter } = map_inner_return(ty, kind)?;
-
-    Ok(if fallible {
-        ReturnInfo {
-            py_ret_ty: quote!(::pliron_python::pyo3::PyResult<#py_ty>),
-            wrap_result: quote! { let __val = __result; Ok(#converter) },
-        }
-    } else {
-        ReturnInfo {
-            py_ret_ty: py_ty,
-            wrap_result: quote! { let __val = __result; #converter },
-        }
+    Ok(match extract_result_ok(ty) {
+        Some(ok_ty) => Return {
+            value: analyse_return_value(ok_ty, kind)?,
+            in_result: true,
+        },
+        None => Return {
+            value: analyse_return_value(ty, kind)?,
+            in_result: false,
+        },
     })
 }
 
-struct InnerReturn {
-    py_ty: TokenStream,
-    converter: TokenStream,
-}
-
-fn map_inner_return(ty: &Type, kind: &ImplKind) -> syn::Result<InnerReturn> {
-    let pymap = pymap_path();
-    match classify(ty) {
-        Some(ParamKind::ContextParam) => Err(syn::Error::new_spanned(
-            ty,
-            format!("{}: `&Context` cannot be a return type", kind.macro_name),
-        )),
-        Some(ParamKind::Trivial) => Ok(InnerReturn {
-            py_ty: quote!(#ty),
-            converter: quote! { __val },
-        }),
-        Some(ParamKind::PyMapped) => {
-            // `()` is classified as PyMapped (it isn't recognized as primitive),
-            // so handle the unit case explicitly here (reached for `Result<()>`).
-            if is_unit(ty) {
-                return Ok(InnerReturn {
-                    py_ty: quote!(()),
-                    converter: quote! {},
-                });
-            }
-            Ok(InnerReturn {
-                py_ty: quote!(<#ty as #pymap>::Owned),
-                converter: quote!(<#ty as #pymap>::into_py(__val)),
-            })
-        }
-        None => Err(syn::Error::new_spanned(
-            ty,
-            format!("{}: unsupported return shape", kind.macro_name),
-        )),
+fn analyse_return_value(ty: &Type, kind: &ImplKind) -> syn::Result<ReturnValue> {
+    // `()` would classify as PyMapped (it isn't recognized as primitive).
+    if is_unit(ty) {
+        return Ok(ReturnValue::Unit);
     }
+    let value_kind = match classify(ty) {
+        Some(ParamKind::ContextParam) => {
+            return Err(syn::Error::new_spanned(
+                ty,
+                format!("{}: `&Context` cannot be a return type", kind.macro_name),
+            ));
+        }
+        Some(ParamKind::Trivial) => ValueKind::Trivial,
+        Some(ParamKind::PyMapped) => ValueKind::PyMapped,
+        None => {
+            return Err(syn::Error::new_spanned(
+                ty,
+                format!("{}: unsupported return shape", kind.macro_name),
+            ));
+        }
+    };
+    Ok(ReturnValue::Value(value_kind, Box::new(ty.clone())))
 }
 
 fn is_unit(ty: &Type) -> bool {
@@ -505,4 +396,118 @@ fn extract_result_ok(ty: &Type) -> Option<&Type> {
         }
     }
     None
+}
+
+/// Generate the Python wrapper `fn` described by `desc`. `rust_ty` is the Rust
+/// self type, on which static methods are called.
+///
+/// The wrapper:
+/// - takes `&self` or `&mut self` for instance methods (per [`ImplKind::instance_access`]),
+///   and is a `#[staticmethod]` otherwise;
+/// - drops `&Context` / `&mut Context` parameters from the Python signature and
+///   fetches the active context instead (`get_ctx()` or `get_ctx_mut()`);
+/// - takes other parameters as-is when pyo3 handles them natively, or through
+///   `PyMap::Borrowed` otherwise;
+/// - binds `__inner` as [`ImplKind::instance_access`] says and calls the method
+///   on it, or calls it on `rust_ty`;
+/// - converts the result, as-is or through `PyMap::into_py`, returning `PyResult`
+///   when the method returns `Result` or the wrapper uses `?` to fetch the context.
+///
+/// The body's locals are `ctx` (the context), `__inner` (the Rust value, bound
+/// by the kind), `__result` (what the method returned) and `__val` (the value
+/// being converted).
+fn emit_method(desc: &MethodDesc, rust_ty: &syn::Ident) -> TokenStream {
+    let MethodDesc {
+        name,
+        receiver,
+        params,
+        ctx_access,
+        ret,
+    } = desc;
+    let pymap = pymap_path();
+
+    let py_params = params
+        .iter()
+        .filter_map(|Param { name, ty, kind }| match kind {
+            ParamKind::ContextParam => None,
+            ParamKind::Trivial => Some(quote! { #name: #ty }),
+            ParamKind::PyMapped => Some(quote! { #name: <#ty as #pymap>::Borrowed<'_> }),
+        });
+    let call_args = params.iter().map(|Param { name, ty, kind }| match kind {
+        ParamKind::ContextParam => quote! { ctx },
+        ParamKind::Trivial => quote! { #name },
+        ParamKind::PyMapped => quote! { <#ty as #pymap>::from_py(#name) },
+    });
+
+    let (static_attr, self_param, bind_inner, call_expr) = match receiver {
+        Receiver::Static => (
+            quote! { #[staticmethod] },
+            quote! {},
+            quote! {},
+            quote! { #rust_ty::#name(#(#call_args),*) },
+        ),
+        Receiver::Shared(access) | Receiver::Mut(access) => {
+            let InstanceAccess {
+                receiver,
+                bind_inner,
+            } = access;
+            (
+                quote! {},
+                quote! { #receiver, },
+                bind_inner.clone(),
+                quote! { __inner.#name(#(#call_args),*) },
+            )
+        }
+    };
+
+    let fetch_ctx = match ctx_access {
+        CtxAccess::None => quote! {},
+        CtxAccess::Shared => quote! { let ctx = ::pliron_python::get_ctx()?; },
+        CtxAccess::Mut => quote! { let ctx = ::pliron_python::get_ctx_mut()?; },
+    };
+    // Fetching the context uses `?`, so the wrapper must return `PyResult`.
+    let fallible = *ctx_access != CtxAccess::None;
+
+    let py_result = |ty: TokenStream| quote!(::pliron_python::pyo3::PyResult<#ty>);
+    // For a value: its Python type, and the expression converting `__val` to it.
+    let value = match &ret.value {
+        ReturnValue::Unit => None,
+        ReturnValue::Value(ValueKind::Trivial, ty) => Some((quote!(#ty), quote! { __val })),
+        ReturnValue::Value(ValueKind::PyMapped, ty) => Some((
+            quote!(<#ty as #pymap>::Owned),
+            quote!(<#ty as #pymap>::into_py(__val)),
+        )),
+    };
+    // A `Result` is returned as `PyResult` whether or not the wrapper is fallible.
+    let (py_ret_ty, wrap_result) = match (value, ret.in_result, fallible) {
+        (None, false, false) => (quote!(()), quote! {}),
+        (None, false, true) => (py_result(quote!(())), quote! { Ok(()) }),
+        (None, true, false | true) => (
+            py_result(quote!(())),
+            quote! { __result.map(|__val| {}).map_err(::pliron_python::to_py_err) },
+        ),
+        (Some((py_ty, convert)), false, false) => {
+            (py_ty, quote! { let __val = __result; #convert })
+        }
+        (Some((py_ty, convert)), false, true) => (
+            py_result(py_ty),
+            quote! { let __val = __result; Ok(#convert) },
+        ),
+        (Some((py_ty, convert)), true, false | true) => (
+            py_result(py_ty),
+            quote! {
+                __result.map(|__val| { #convert }).map_err(::pliron_python::to_py_err)
+            },
+        ),
+    };
+
+    quote! {
+        #static_attr
+        fn #name(#self_param #(#py_params),*) -> #py_ret_ty {
+            #fetch_ctx
+            #bind_inner
+            let __result = #call_expr;
+            #wrap_result
+        }
+    }
 }
