@@ -45,6 +45,11 @@ Both halves live in the `pliron-python` crate, which is compiled (as a
    (`pliron.irbuild`), and per-dialect modules (`pliron.builtin`, `pliron.llvm`)
    routed off the `"dialect.name"` registration prefix; why `sys.modules`
    seeding is needed and how the shim publishes it all generically.
+8. [08-impl-mirror-internals.md](08-impl-mirror-internals.md) — inside the
+   impl mirror (`impl_common.rs`): the normalise → analyse → emit pipeline,
+   the `MethodDesc` data model, context-access combination, the return
+   matrix, the per-kind `ImplKind` hooks, error catalogue and known
+   limitations. Read when changing the `#[py_*_impl]` generator.
 
 ## One-paragraph summary
 
