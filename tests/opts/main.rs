@@ -10,3 +10,4 @@ mod dce;
 mod mem2reg;
 mod sccp;
 mod simplify_cfg;
+mod test_ops;

@@ -17,7 +17,7 @@ use crate::{
     utils::apfloat::{self, GetSemantics, Semantics},
 };
 use alloc::vec::Vec;
-use pliron::derive::{pliron_type, type_interface_impl};
+use pliron::derive::{pliron_type, pliron_type_impl, type_interface_impl};
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Signedness {
@@ -29,10 +29,11 @@ pub enum Signedness {
 #[pliron_type(name = "builtin.integer", generate_get = true, verifier = "succ")]
 #[derive(Hash, PartialEq, Eq, Debug, Clone)]
 pub struct IntegerType {
-    width: u32,
-    signedness: Signedness,
+    pub width: u32,
+    pub signedness: Signedness,
 }
 
+#[pliron_type_impl]
 impl IntegerType {
     /// Get width.
     pub fn width(&self) -> u32 {
@@ -119,7 +120,7 @@ impl Printable for IntegerType {
 ///
 #[pliron_type(name = "builtin.function", format = "`<` $0 `>`", verifier = "succ")]
 #[derive(Hash, PartialEq, Eq, Debug)]
-pub struct FunctionType(TypeSig);
+pub struct FunctionType(pub TypeSig);
 
 impl FunctionType {
     /// Get a Function type.

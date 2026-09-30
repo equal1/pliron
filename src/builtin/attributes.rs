@@ -36,7 +36,7 @@ use alloc::{
     vec::Vec,
 };
 use core::hash::{Hash, Hasher};
-use pliron::derive::{attr_interface_impl, pliron_attr};
+use pliron::derive::{attr_interface_impl, pliron_attr, pliron_attr_impl};
 use rustc_apfloat::Float;
 use thiserror::Error;
 
@@ -49,7 +49,7 @@ use crate::{op::Op, operation::Operation};
 
 #[pliron_attr(name = "builtin.identifier", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct IdentifierAttr(Identifier);
+pub struct IdentifierAttr(pub Identifier);
 
 impl IdentifierAttr {
     /// Create a new [IdentifierAttr]
@@ -80,8 +80,9 @@ impl From<IdentifierAttr> for Identifier {
 /// Similar to MLIR's [StringAttr](https://mlir.llvm.org/docs/Dialects/Builtin/#stringattr).
 #[pliron_attr(name = "builtin.string", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct StringAttr(String);
+pub struct StringAttr(pub String);
 
+#[pliron_attr_impl]
 impl StringAttr {
     /// Create a new [StringAttr].
     pub fn new(value: String) -> Self {
@@ -148,8 +149,9 @@ impl Parsable for StringAttr {
 /// A boolean attribute
 #[pliron_attr(name = "builtin.bool", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct BoolAttr(bool);
+pub struct BoolAttr(pub bool);
 
+#[pliron_attr_impl]
 impl BoolAttr {
     /// Create a new [BoolAttr].
     pub fn new(value: bool) -> Self {
@@ -174,8 +176,8 @@ impl From<bool> for BoolAttr {
 #[pliron_attr(name = "builtin.integer")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub struct IntegerAttr {
-    ty: TypedHandle<IntegerType>,
-    val: APInt,
+    pub ty: TypedHandle<IntegerType>,
+    pub val: APInt,
 }
 
 impl Printable for IntegerAttr {
@@ -570,6 +572,7 @@ impl Verify for VecAttr {
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash)]
 pub struct UnitAttr;
 
+#[pliron_attr_impl]
 impl UnitAttr {
     pub fn new() -> Self {
         UnitAttr
@@ -580,7 +583,7 @@ impl UnitAttr {
 /// Same as MLIR's [TypeAttr](https://mlir.llvm.org/docs/Dialects/Builtin/#typeattr).
 #[pliron_attr(name = "builtin.type", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct TypeAttr(TypeHandle);
+pub struct TypeAttr(pub TypeHandle);
 
 impl TypeAttr {
     pub fn new(ty: TypeHandle) -> Self {

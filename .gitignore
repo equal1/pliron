@@ -1,2 +1,12 @@
 /target
 Cargo.lock
+
+.vscode/
+
+__pycache__*/
+*.pyc
+*.pyo
+*.so
+
+.venv
+./pliron-python/.venv
